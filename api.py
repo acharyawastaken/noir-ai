@@ -27,6 +27,7 @@ security = HTTPBearer()
 
 class QueryRequest(BaseModel):
     query: str
+    session_id: str = "default"
 
 class LoginRequest(BaseModel):
     username: str
@@ -107,8 +108,9 @@ async def upload_file(file: UploadFile = File(...), current_user: str = Depends(
 @app.post("/query")
 async def query_document(request: QueryRequest, current_user: str = Depends(get_current_user)):
     try:
-        # Pass current_user as the session_id so that each user gets their own memory!
-        response = rag_engine.query(request.query, session_id=current_user)
+        # Combine current_user and session_id to isolate memory space securely
+        backend_session_id = f"{current_user}:{request.session_id}"
+        response = rag_engine.query(request.query, session_id=backend_session_id)
         return {"response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -117,8 +119,11 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
 async def reset_rag(current_user: str = Depends(get_current_user)):
     try:
         rag_engine.reset()
-        # Also clear the current user's specific history
-        rag_engine.history.pop(current_user, None)
+        # Clear all history keys belonging to the current user
+        prefix = f"{current_user}:"
+        user_keys = [k for k in list(rag_engine.history.keys()) if k.startswith(prefix)]
+        for k in user_keys:
+            rag_engine.history.pop(k, None)
         return {"message": "RAG engine index and chat history reset successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
