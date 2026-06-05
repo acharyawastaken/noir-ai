@@ -48,6 +48,10 @@ async def upload_file(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
         
     try:
+        # Release the in-memory ChromaDB connection FIRST so ingest.py can safely
+        # delete and recreate chroma_db without hitting Windows file lock errors.
+        rag_engine.reset()
+
         result = subprocess.run(
             [sys.executable, "ingest.py", file_path], 
             capture_output=True, text=True,
@@ -61,7 +65,7 @@ async def upload_file(file: UploadFile = File(...)):
         rag_engine.load(force=True)
             
     finally:
-        # Clean up the file
+        # Clean up the uploaded file
         if os.path.exists(file_path):
             os.remove(file_path)
             
