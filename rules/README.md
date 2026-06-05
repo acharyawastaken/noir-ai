@@ -30,3 +30,16 @@ python ingest.py your_document.md
 ```bash
 python query.py "What is the exact product code mentioned for the new feature?"
 ```
+
+## Roadmap & Future Phases
+
+### Next Phase Features
+1. **Multi-Agent RAG**: Transition to a multi-agent orchestration architecture where specialized agents handle document routing, summarization, and domain-specific Q&A.
+2. **Authentication with JWT**: Secure REST endpoints using JSON Web Tokens (JWT) for user authorization and session isolation.
+3. **Advanced Retrieval**:
+   - **Citations**: Track source context origins and display precise citations with page numbers/references in generated answers.
+   - **Reranking**: Utilize a Cohere or local cross-encoder model to rerank retrieved documents and maximize relevance.
+   - **Query Expansion**: Expand user queries using synonyms or sub-queries to capture missed document context.
+4. **Multi-Document Support**: Ingest and query multiple documents in a single index with document filtering.
+5. **PPTX Input Type Addition**: Support PowerPoint presentation ingestion via structured slide parsing.
+6. **Chat History & Memory**: Persist conversation history to provide stateful chat loops.

@@ -9,5 +9,13 @@
 * **Step 2.1: API Layer.** Wrap the ingestion and query logic into a simple REST API (e.g., FastAPI) to decouple the backend from the frontend.
 * **Step 2.2: User Interface.** Create a lightweight frontend (e.g., Streamlit or Gradio) allowing users to upload a `.md` file visually and chat with their document.
 
-## Phase 3: Future Scope (Do Not Build Now)
-* Notion OAuth Integration (Deferred to avoid 2 weeks of zero-value complexity).
+## Phase 3: Next Phase Scope & Expansion
+* **Step 3.1: Security & Auth.** Implement JWT tokens for API route authentication.
+* **Step 3.2: Multi-Agent RAG.** Create LangGraph or LangChain Agents to handle routing, query expansion, and synthesis.
+* **Step 3.3: Advanced Retrieval Pipeline.**
+  * Integrate Cohere Rerank or local Cross-Encoder.
+  * Extract citations from source documents to display in generated answers.
+* **Step 3.4: Data Parsing Expansion.**
+  * Ingest PowerPoint (`.pptx`) input types.
+  * Add multi-document querying with index metadata filters.
+* **Step 3.5: Conversational History.** Implement stateful memory stores (e.g. ChatHistory) to support full chat logs.

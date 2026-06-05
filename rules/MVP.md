@@ -12,3 +12,10 @@
 * Cloud vector databases (Pinecone, Weaviate, etc.).
 * Complex UI or Authentication systems.
 * Advanced chunking strategies (keep to standard recursive character splitting for now).
+
+## NEXT PHASE SCOPE
+* **Multi-Agent RAG Orchestration**
+* **Authentication with JWT tokens**
+* **Citations, Reranking & Query Expansion**
+* **Multi-Doc index query routing & PPTX input parsing**
+* **Chat history and memory stores**

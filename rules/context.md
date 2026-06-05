@@ -54,6 +54,8 @@
 
 ## 🚀 Next Steps (Phase 3 - Future Scope)
 - [ ] Notion OAuth Integration (Deferred per `PLAN.md`)
-- [ ] Consider adding streaming responses to the Streamlit chat UI
-- [ ] Consider adding multi-document support (ingest multiple files into the same ChromaDB collection)
-- [ ] Consider adding a "clear index" button to the Streamlit UI to reset ChromaDB and BM25 index
+- [ ] Multi-Agent RAG Orchestration
+- [ ] Authentication with JWT tokens
+- [ ] Citations, Reranking & Query Expansion
+- [ ] Multi-document index routing and PPTX input file support
+- [ ] Chat history and conversational memory stores

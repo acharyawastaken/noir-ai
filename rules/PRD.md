@@ -14,3 +14,11 @@ Clients and internal stakeholders evaluating the efficacy of custom LLM solution
 2.  **Hybrid Retrieval:** The system must retrieve information using both vector similarity and BM25 exact keyword matching to ensure no factual data is missed.
 3.  **Local Persistence:** Database state must survive restarts to prevent time-consuming re-indexing and "ghost" debugging during development.
 4.  **CLI Accessibility:** The foundational system must be fully operable via the command line to validate logic before UI development.
+
+## Future Product Roadmap
+1.  **Multi-Doc & PPTX Support:** Expand ingestion to handle multi-document indexes and PowerPoint (.pptx) file types.
+2.  **Advanced QA Engine:**
+    *   **Multi-Agent RAG:** Orchestrate agent workflows for complex doc routing.
+    *   **Citations, Reranking & Query Expansion:** Elevate query understanding, relevance ranking, and source citation trust.
+3.  **Authentication & Security:** Integrate JSON Web Tokens (JWT) for secure authentication.
+4.  **Chat Memory:** Implement persistent conversational context and stateful history.
