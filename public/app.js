@@ -386,19 +386,6 @@ function App() {
     appendMessageToActiveStore(userMsg);
     scrollToBottom();
 
-    // Auto-rename chat based on first query
-    if (messages.length === 0) {
-      var truncatedName = q.length > 22 ? q.substring(0, 20) + "\u2026" : q;
-      setChats(function (prev) {
-        return prev.map(function (c) {
-          if (c.id === activeChatId) {
-            return Object.assign({}, c, { name: truncatedName });
-          }
-          return c;
-        });
-      });
-    }
-
     fetch("/query", {
       method: "POST",
       headers: {
@@ -424,6 +411,20 @@ function App() {
         };
         setLatestAssistantId(botId);
         appendMessageToActiveStore(botMsg);
+        
+        // Auto-rename chat using dynamic generated title from description and reply
+        if (result.ok && result.data.title) {
+          var newTitle = result.data.title;
+          setChats(function (prev) {
+            return prev.map(function (c) {
+              if (c.id === activeChatId) {
+                return Object.assign({}, c, { name: newTitle });
+              }
+              return c;
+            });
+          });
+        }
+
         setBusy(false);
         scrollToBottom();
       })

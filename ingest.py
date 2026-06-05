@@ -169,30 +169,34 @@ def ingest_document(file_path):
     print(f"Created {len(splits)} chunks.")
 
     print("Generating Vector Embeddings and saving to Chroma in batches...")
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+    bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
+    ollama_embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+    embeddings = OllamaEmbeddings(model=ollama_embed_model)
 
     # Always wipe the old index before writing a fresh one
-    if os.path.exists("./chroma_db"):
+    if os.path.exists(chroma_db_path):
         import shutil as _shutil
-        _shutil.rmtree("./chroma_db")
-        print("Cleared old chroma_db index.")
+        _shutil.rmtree(chroma_db_path)
+        print(f"Cleared old chroma_db index at {chroma_db_path}.")
     
     batch_size = 50
-    vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+    vectorstore = Chroma(persist_directory=chroma_db_path, embedding_function=embeddings)
     
     for i in range(0, len(splits), batch_size):
         batch = splits[i:i + batch_size]
         print(f"Processing batch {i//batch_size + 1} (chunks {i} to {min(i+batch_size, len(splits))})...")
         vectorstore.add_documents(documents=batch)
         
-    print("Vectors saved to ./chroma_db")
+    print(f"Vectors saved to {chroma_db_path}")
 
     print("Generating BM25 Index...")
     bm25_retriever = BM25Retriever.from_documents(splits)
     
-    with open("bm25_index.pkl", "wb") as f:
+    with open(bm25_index_path, "wb") as f:
         pickle.dump(bm25_retriever, f)
-    print("BM25 index saved to ./bm25_index.pkl")
+    print(f"BM25 index saved to {bm25_index_path}")
 
     print("Ingestion complete!")
 

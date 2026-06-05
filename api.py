@@ -8,6 +8,9 @@ import subprocess
 import sys
 import jwt
 import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Import in-process RAG engine for instant query retrieval times (<5s)
 from query import rag_engine
@@ -22,7 +25,11 @@ app.add_middleware(
 )
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg"}
-SECRET_KEY = "noir-super-secret-key-12345"
+SECRET_KEY = os.getenv("SECRET_KEY", "noir-super-secret-key-12345")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+DEFAULT_PASSWORD = os.getenv("DEFAULT_PASSWORD", "password")
+
 security = HTTPBearer()
 
 class QueryRequest(BaseModel):
@@ -56,8 +63,7 @@ async def startup_event():
 
 @app.post("/login")
 async def login(credentials: LoginRequest):
-    # Simplistic check: Allow admin/admin or any user with password 'password'
-    if (credentials.username == "admin" and credentials.password == "admin") or credentials.password == "password":
+    if (credentials.username == ADMIN_USERNAME and credentials.password == ADMIN_PASSWORD) or credentials.password == DEFAULT_PASSWORD:
         payload = {
             "sub": credentials.username,
             "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24)
@@ -110,8 +116,17 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
     try:
         # Combine current_user and session_id to isolate memory space securely
         backend_session_id = f"{current_user}:{request.session_id}"
+        
+        # Check if the chat history is empty for this session (meaning first turn)
+        is_first_turn = len(rag_engine.history.get(backend_session_id, [])) == 0
+        
         response = rag_engine.query(request.query, session_id=backend_session_id)
-        return {"response": response}
+        
+        title = None
+        if is_first_turn:
+            title = rag_engine.generate_chat_title(request.query, response)
+            
+        return {"response": response, "title": title}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
@@ -130,4 +145,6 @@ async def reset_rag(current_user: str = Depends(get_current_user)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("API_HOST", "0.0.0.0")
+    port = int(os.getenv("API_PORT", 8000))
+    uvicorn.run(app, host=host, port=port)

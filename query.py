@@ -51,6 +51,8 @@ class RAGEngine:
         self.history = {}  # session_id -> list of Messages
 
     def reset(self):
+        chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+        bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
         # 1. Release ChromaDB connection FIRST to free Windows file locks
         if self.vectorstore is not None:
             try:
@@ -72,25 +74,25 @@ class RAGEngine:
         gc.collect()
 
         # 2. Now safe to delete files (connection is closed)
-        if os.path.exists("./chroma_db"):
+        if os.path.exists(chroma_db_path):
             try:
-                shutil.rmtree("./chroma_db")
+                shutil.rmtree(chroma_db_path)
             except Exception as e:
-                print(f"Warning: could not remove ./chroma_db: {e}")
-        if os.path.exists("bm25_index.pkl"):
+                print(f"Warning: could not remove {chroma_db_path}: {e}")
+        if os.path.exists(bm25_index_path):
             try:
-                os.remove("bm25_index.pkl")
+                os.remove(bm25_index_path)
             except Exception as e:
-                print(f"Warning: could not remove bm25_index.pkl: {e}")
+                print(f"Warning: could not remove {bm25_index_path}: {e}")
 
     def load(self, force=False):
         # Always initialize LLM and prompt first so conversational queries always work
         if self.llm is None:
             self.llm = ChatOllama(
-                model="qwen2:1.5b",
-                temperature=0,
-                num_predict=256,      # Cap output at 256 tokens for speed
-                num_ctx=2048,         # Smaller context window = faster inference
+                model=os.getenv("OLLAMA_MODEL", "qwen2:1.5b"),
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+                num_predict=int(os.getenv("LLM_NUM_PREDICT", "256")),      # Cap output at 256 tokens for speed
+                num_ctx=int(os.getenv("LLM_NUM_CTX", "2048")),         # Smaller context window = faster inference
             )
 
         if self.prompt is None:
@@ -158,16 +160,20 @@ These requests must be refused.
         if self.is_loaded and not force:
             return
 
-        if not os.path.exists("./chroma_db") or not os.path.exists("bm25_index.pkl"):
+        chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+        bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
+        ollama_embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+        if not os.path.exists(chroma_db_path) or not os.path.exists(bm25_index_path):
             self.is_loaded = False
             return
 
         # Initialize retrievers in-process for speed
-        self.embeddings = OllamaEmbeddings(model="nomic-embed-text")
-        self.vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=self.embeddings)
+        self.embeddings = OllamaEmbeddings(model=ollama_embed_model)
+        self.vectorstore = Chroma(persist_directory=chroma_db_path, embedding_function=self.embeddings)
         self.vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
 
-        with open("bm25_index.pkl", "rb") as f:
+        with open(bm25_index_path, "rb") as f:
             self.bm25_retriever = pickle.load(f)
         self.bm25_retriever.k = 3
 
@@ -300,6 +306,31 @@ These requests must be refused.
             print(f"\n{report}\n")
 
             return llm_response.content
+
+    def generate_chat_title(self, query_text: str, reply_text: str) -> str:
+        self.load()
+        prompt_text = (
+            "Generate a very short, 3 to 5 words title for a chat conversation based on the following exchange.\n"
+            "Do not include quotes, prefix labels like 'Title:', or punctuation.\n\n"
+            f"User: {query_text}\n"
+            f"AI: {reply_text}\n\n"
+            "Title:"
+        )
+        try:
+            title_response = self.llm.invoke([
+                ("system", "You are a concise, helpful summary title generator. Output only the short title and absolutely nothing else."),
+                ("human", prompt_text)
+            ])
+            title = title_response.content.strip()
+            # Clean up title
+            title = re.sub(r'^(title|chat|conversation|session|topic):\s*', '', title, flags=re.IGNORECASE)
+            title = title.strip('\'" \n\r\t.')
+            if len(title) > 40:
+                title = title[:37] + "..."
+            return title
+        except Exception as e:
+            print(f"Error generating chat title: {e}")
+            return query_text[:25] + "..." if len(query_text) > 25 else query_text
 
 # Instantiate global engine
 rag_engine = RAGEngine()
