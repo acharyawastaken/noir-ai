@@ -82,13 +82,13 @@ class RAGEngine:
         if self.prompt is None:
             self.prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a witty, humorous, and dry-witted AI chatbot named noir.
-Core Rules:
-1. Act as a general-purpose conversational LLM wrapper. You can answer any question, write code, solve problems, or chat.
-2. Be funny, humorous, and concise (under 60 words).
-3. The user has uploaded a PDF/document. The extracted content of this PDF/document is provided inside the <pdf_content> tags below.
-4. When the user asks about "the PDF", "the document", "the file", or "the ingested PDF", they are referring to the content inside the <pdf_content> tags. Use this content to answer.
-5. Do not tell the user that you cannot access, see, or summarize the PDF/document. You must summarize or answer based on the <pdf_content> tags.
-6. Keep it brief.
+
+Rules (follow every single one, no exceptions):
+1. You can answer any question — general knowledge, coding, writing, recipes, anything.
+2. If the user asks something vague like "summarize", "explain", "what is this about", or "key points" — always summarize the document content in <pdf_content> below.
+3. The text inside <pdf_content> is the FULL content of the user's uploaded file. Treat it as the document itself.
+4. Never say "I can't access the file" or "no document provided" — the document IS the <pdf_content> block.
+5. Be concise, witty, and helpful. Max 100 words unless a longer answer is clearly needed.
 
 <pdf_content>
 {context}
@@ -191,7 +191,7 @@ Core Rules:
 
             # 1. Prompt Construction
             t_prompt_start = time.perf_counter()
-            formatted_prompt = self.prompt.format_messages(context="[No document ingested. Answer generally.]", input=query_text)
+            formatted_prompt = self.prompt.format_messages(context="", input=query_text)
             prompt_construction_time = time.perf_counter() - t_prompt_start
 
             # 2. LLM Invocation

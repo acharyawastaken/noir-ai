@@ -170,6 +170,12 @@ def ingest_document(file_path):
 
     print("Generating Vector Embeddings and saving to Chroma in batches...")
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+    # Always wipe the old index before writing a fresh one
+    if os.path.exists("./chroma_db"):
+        import shutil as _shutil
+        _shutil.rmtree("./chroma_db")
+        print("Cleared old chroma_db index.")
     
     batch_size = 50
     vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
