@@ -5,7 +5,7 @@
 
 const { useState, useRef, useCallback, useEffect } = React;
 
-const ALLOWED_EXTS = [".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt"];
+const ALLOWED_EXTS = [".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg"];
 
 
 
@@ -324,7 +324,7 @@ function App() {
               Upload a document, ingest it into the hybrid index, then ask anything. Answers are synthesized from both semantic and keyword search.
             </p>
             <div className="landing-formats">
-              {["PDF", "DOCX", "DOC", "CSV", "XLSX", "MD", "TXT"].map(function (f) {
+              {["PDF", "DOCX", "DOC", "CSV", "XLSX", "MD", "TXT", "PNG", "JPG", "JPEG"].map(function (f) {
                 return <span className="format-badge" key={f}>{f}</span>;
               })}
             </div>
@@ -364,7 +364,7 @@ function App() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.docx,.doc,.csv,.xlsx,.md,.txt"
+              accept=".pdf,.docx,.doc,.csv,.xlsx,.md,.txt,.png,.jpg,.jpeg"
               style={{ display: "none" }}
               onChange={function (e) { handleFile(e.target.files ? e.target.files[0] : null); }}
             />

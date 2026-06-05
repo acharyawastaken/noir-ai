@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg"}
 
 class QueryRequest(BaseModel):
     query: str
@@ -50,7 +50,8 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         result = subprocess.run(
             [sys.executable, "ingest.py", file_path], 
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            env=dict(os.environ, PYTHONIOENCODING="utf-8")
         )
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Ingestion failed: {result.stderr}")

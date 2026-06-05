@@ -3,6 +3,7 @@ import sys
 import pickle
 import time
 import shutil
+import re
 from dotenv import load_dotenv
 
 from langchain_ollama import OllamaEmbeddings, ChatOllama
@@ -11,6 +12,30 @@ from langchain_classic.retrievers import EnsembleRetriever
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+
+def sanitise_text(text: str) -> str:
+    """Sanitise text content to protect against prompt injection, safety override tricks, and formatting errors."""
+    if not text:
+        return ""
+    patterns_to_neutralize = [
+        r"ignore\s+(?:all\s+)?previous\s+instructions",
+        r"ignore\s+(?:any\s+)?instructions\s+above",
+        r"ignore\s+the\s+(?:context|rules|guidelines)",
+        r"system\s+override",
+        r"you\s+are\s+now\s+a",
+        r"instead\s+of\s+answering",
+        r"forget\s+your\s+previous",
+        r"bypass\s+safety",
+        r"delete\s+all",
+        r"reset\s+database",
+        r"execute\s+command",
+    ]
+    sanitised = text
+    for pattern in patterns_to_neutralize:
+        sanitised = re.sub(pattern, "[CLEANED SECURE DATA]", sanitised, flags=re.IGNORECASE)
+    sanitised = sanitised.replace("{", "[").replace("}", "]")
+    sanitised = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", sanitised)
+    return sanitised
 
 class RAGEngine:
     def __init__(self):
@@ -56,15 +81,18 @@ class RAGEngine:
 
         if self.prompt is None:
             self.prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a sarcastic, witty AI chatbot named noir.
+                ("system", """You are a witty, humorous, and dry-witted AI chatbot named noir.
 Core Rules:
 1. Act as a general-purpose conversational LLM wrapper. You can answer any question, write code, solve problems, or chat.
-2. Be funny, sarcastic, and concise (under 60 words).
-3. If relevant context is provided below, use it to guide your response. If the context is empty, generic, or unrelated to the user's prompt, ignore it and answer the user directly using your general knowledge.
-4. Keep it brief.
+2. Be funny, humorous, and concise (under 60 words).
+3. The user has uploaded a PDF/document. The extracted content of this PDF/document is provided inside the <pdf_content> tags below.
+4. When the user asks about "the PDF", "the document", "the file", or "the ingested PDF", they are referring to the content inside the <pdf_content> tags. Use this content to answer.
+5. Do not tell the user that you cannot access, see, or summarize the PDF/document. You must summarize or answer based on the <pdf_content> tags.
+6. Keep it brief.
 
-Context:
-{context}"""),
+<pdf_content>
+{context}
+</pdf_content>"""),
                 ("human", "{input}")
             ])
 
@@ -78,11 +106,11 @@ Context:
         # Initialize retrievers in-process for speed
         self.embeddings = OllamaEmbeddings(model="nomic-embed-text")
         self.vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=self.embeddings)
-        self.vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 2})
+        self.vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
 
         with open("bm25_index.pkl", "rb") as f:
             self.bm25_retriever = pickle.load(f)
-        self.bm25_retriever.k = 2
+        self.bm25_retriever.k = 3
 
         self.ensemble_retriever = EnsembleRetriever(
             retrievers=[self.bm25_retriever, self.vector_retriever],
@@ -114,7 +142,7 @@ Context:
 
             # 4. Context Formatting
             t_format_start = time.perf_counter()
-            context_str = "\n\n".join([doc.page_content for doc in docs])
+            context_str = "\n\n".join([sanitise_text(doc.page_content) for doc in docs])
             context_format_time = time.perf_counter() - t_format_start
 
             # 5. Prompt Construction
