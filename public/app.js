@@ -133,6 +133,7 @@ function App() {
   var [statusText, setStatusText] = useState("Waiting for document\u2026");
   var [logText, setLogText] = useState("");
   var [showLog, setShowLog] = useState(false);
+  var [showFeatures, setShowFeatures] = useState(false);
   var [latestAssistantId, setLatestAssistantId] = useState(null);
 
   var fileInputRef = useRef(null);
@@ -279,6 +280,14 @@ function App() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <button
+            className="btn btn-ghost"
+            onClick={function () { setShowFeatures(true); }}
+            style={{ fontSize: "9px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.8px" }}
+          >
+            <Icon name="check-square" size={13} />
+            Features
+          </button>
           {logText && (
             <button
               className="btn btn-ghost"
@@ -297,6 +306,64 @@ function App() {
           </div>
         </div>
       </header>
+
+      {/* FEATURES MODAL */}
+      {showFeatures && (
+        <div className="modal-overlay" onClick={function () { setShowFeatures(false); }}>
+          <div className="modal-content" onClick={function (e) { e.stopPropagation(); }}>
+            <div className="modal-header">
+              <div className="modal-title">
+                <Icon name="list-checks" size={18} />
+                Features Checklist
+              </div>
+              <button className="modal-close" onClick={function () { setShowFeatures(false); }}>
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+            
+            <div className="feature-group">
+              <div className="feature-group-title">Achieved (MVP)</div>
+              <div className="feature-list">
+                {[
+                  "CLI Scripts (ingest & query)",
+                  "File Support: Markdown, PDF, CSV, Excel, Images (OCR)",
+                  "Hybrid Retrieval (Vector + BM25)",
+                  "Document Summarization",
+                  "Witty/Dry-witted AI Personality (Noir)",
+                  "Fallback general conversation"
+                ].map(function (f, i) {
+                  return (
+                    <div className="feature-item" key={"ach-" + i}>
+                      <div className="feature-checkbox checked"><Icon name="check" size={12} /></div>
+                      <div className="feature-text">{f}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="feature-group" style={{ marginBottom: 0 }}>
+              <div className="feature-group-title">Next Phase (Pending)</div>
+              <div className="feature-list">
+                {[
+                  "Multi-Agent RAG Orchestration",
+                  "Authentication with JWT tokens",
+                  "Citations, Reranking & Query Expansion",
+                  "Multi-Doc index query routing & PPTX parsing",
+                  "Chat history and memory stores"
+                ].map(function (f, i) {
+                  return (
+                    <div className="feature-item" key={"pend-" + i}>
+                      <div className="feature-checkbox"></div>
+                      <div className="feature-text pending">{f}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LOG PANEL */}
       {showLog && logText && (
