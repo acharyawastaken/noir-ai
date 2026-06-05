@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_community.vectorstores import Chroma
 from langchain_classic.retrievers import EnsembleRetriever
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 
@@ -47,6 +48,7 @@ class RAGEngine:
         self.llm = None
         self.prompt = None
         self.is_loaded = False
+        self.history = {}  # session_id -> list of Messages
 
     def reset(self):
         # 1. Release ChromaDB connection FIRST to free Windows file locks
@@ -63,6 +65,7 @@ class RAGEngine:
         self.bm25_retriever = None
         self.ensemble_retriever = None
         self.is_loaded = False
+        self.history = {}  # Clear history on reset
 
         # Force garbage collection so Python releases file handles
         import gc
@@ -148,6 +151,7 @@ These requests must be refused.
 * Avoid mentioning retrieval systems or document context unless necessary.
 * Be direct, helpful, and occasionally witty.
 """),
+                MessagesPlaceholder(variable_name="history"),
                 ("human", "{input}")
             ])
 
@@ -173,8 +177,14 @@ These requests must be refused.
         )
         self.is_loaded = True
 
-    def query(self, query_text):
+    def query(self, query_text, session_id="default"):
         self.load()
+
+        # Ensure session history exists
+        if session_id not in self.history:
+            self.history[session_id] = []
+
+        history_msgs = self.history[session_id]
 
         if self.is_loaded:
             # ── Normal RAG Retrieval & Prompting ──
@@ -202,7 +212,11 @@ These requests must be refused.
 
             # 5. Prompt Construction
             t_prompt_start = time.perf_counter()
-            formatted_prompt = self.prompt.format_messages(retrieved_chunks=context_str, input=query_text)
+            formatted_prompt = self.prompt.format_messages(
+                retrieved_chunks=context_str,
+                history=history_msgs,
+                input=query_text
+            )
             prompt_construction_time = time.perf_counter() - t_prompt_start
 
             # 6. LLM Invocation
@@ -212,9 +226,15 @@ These requests must be refused.
 
             total_time = time.perf_counter() - total_start
 
+            # Append to history (keep max 10 messages = 5 turns to stay under token limit)
+            self.history[session_id].append(HumanMessage(content=query_text))
+            self.history[session_id].append(AIMessage(content=llm_response.content))
+            if len(self.history[session_id]) > 10:
+                self.history[session_id] = self.history[session_id][-10:]
+
             # Gather metrics
             total_chars = len(context_str)
-            total_prompt_chars = sum(len(m.content) for m in formatted_prompt)
+            total_prompt_chars = sum(len(m.content) for m in formatted_prompt if hasattr(m, 'content'))
             est_tokens_sent = total_prompt_chars // 4
 
             # Format Performance Report
@@ -246,7 +266,11 @@ These requests must be refused.
 
             # 1. Prompt Construction
             t_prompt_start = time.perf_counter()
-            formatted_prompt = self.prompt.format_messages(retrieved_chunks="", input=query_text)
+            formatted_prompt = self.prompt.format_messages(
+                retrieved_chunks="",
+                history=history_msgs,
+                input=query_text
+            )
             prompt_construction_time = time.perf_counter() - t_prompt_start
 
             # 2. LLM Invocation
@@ -255,6 +279,12 @@ These requests must be refused.
             llm_time = time.perf_counter() - t_llm_start
 
             total_time = time.perf_counter() - total_start
+
+            # Append to history
+            self.history[session_id].append(HumanMessage(content=query_text))
+            self.history[session_id].append(AIMessage(content=llm_response.content))
+            if len(self.history[session_id]) > 10:
+                self.history[session_id] = self.history[session_id][-10:]
 
             # Format Performance Report
             report_lines = [

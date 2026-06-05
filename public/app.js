@@ -136,20 +136,69 @@ function App() {
   var [showFeatures, setShowFeatures] = useState(false);
   var [latestAssistantId, setLatestAssistantId] = useState(null);
 
+  // Authentication State
+  var [token, setToken] = useState(localStorage.getItem("noir_token") || "");
+  var [username, setUsername] = useState("");
+  var [password, setPassword] = useState("");
+  var [loginError, setLoginError] = useState("");
+
   var fileInputRef = useRef(null);
   var textareaRef = useRef(null);
   var messagesEndRef = useRef(null);
 
-  // Clear backend index on refresh / mount
+  // Clear backend index on refresh / mount (only if authenticated)
   useEffect(function () {
-    fetch("/reset", { method: "POST" })
+    if (!token) return;
+    fetch("/reset", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token }
+    })
       .then(function () {
         console.log("Session reset complete.");
       })
       .catch(function (err) {
         console.error("Session reset failed:", err);
       });
-  }, []);
+  }, [token]);
+
+  function handleLogin(e) {
+    if (e) e.preventDefault();
+    setLoginError("");
+    fetch("/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username, password: password })
+    })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json().then(function (data) {
+            throw new Error(data.detail || "Authentication failed");
+          });
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        localStorage.setItem("noir_token", data.token);
+        localStorage.setItem("noir_user", data.username);
+        setToken(data.token);
+        setUsername("");
+        setPassword("");
+      })
+      .catch(function (err) {
+        setLoginError(err.message);
+      });
+  }
+
+  function handleLogout() {
+    localStorage.removeItem("noir_token");
+    localStorage.removeItem("noir_user");
+    setToken("");
+    setMessages([]);
+    setFile(null);
+    setStatus("idle");
+    setStatusText("Waiting for document\u2026");
+    setLogText("");
+  }
 
   var scrollToBottom = useCallback(function () {
     setTimeout(function () {
@@ -182,7 +231,11 @@ function App() {
     var formData = new FormData();
     formData.append("file", f);
 
-    fetch("/upload", { method: "POST", body: formData })
+    fetch("/upload", {
+      method: "POST",
+      body: formData,
+      headers: { "Authorization": "Bearer " + token }
+    })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         if (result.ok) {
@@ -216,10 +269,19 @@ function App() {
 
     fetch("/query", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token
+      },
       body: JSON.stringify({ query: q }),
     })
-      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (res) {
+        if (res.status === 401) {
+          handleLogout();
+          throw new Error("Session expired. Please log in again.");
+        }
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      })
       .then(function (result) {
         var answer = result.data.response || "";
         var botId = (Date.now() + 1).toString();
@@ -266,6 +328,45 @@ function App() {
   // ============================================================
   // RENDER
   // ============================================================
+  if (!token) {
+    return (
+      <div className="auth-overlay">
+        <BGPattern />
+        <div className="auth-card">
+          <img src="/logo.png" className="auth-logo" alt="logo" />
+          <h1 className="auth-title">noir</h1>
+          <p className="auth-subtitle">RAG Engine — Authentication Required</p>
+          <form onSubmit={handleLogin}>
+            <div className="auth-form-group">
+              <label className="auth-label">Username</label>
+              <input
+                type="text"
+                className="auth-input"
+                value={username}
+                onChange={function (e) { setUsername(e.target.value); }}
+                placeholder="Enter username (e.g. admin)"
+                required
+              />
+            </div>
+            <div className="auth-form-group">
+              <label className="auth-label">Password</label>
+              <input
+                type="password"
+                className="auth-input"
+                value={password}
+                onChange={function (e) { setPassword(e.target.value); }}
+                placeholder="Enter password"
+                required
+              />
+            </div>
+            <button type="submit" className="auth-btn">Log In</button>
+          </form>
+          {loginError && <div className="auth-error">{loginError}</div>}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <BGPattern />
@@ -280,6 +381,9 @@ function App() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ fontSize: "10px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.8px", marginRight: "5px" }}>
+            [ {localStorage.getItem("noir_user") || "User"} ]
+          </span>
           <button
             className="btn btn-ghost"
             onClick={function () { setShowFeatures(true); }}
@@ -300,10 +404,18 @@ function App() {
           )}
           <div className={"header-status " + status}>
             <span className="dot" />
-            <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {statusText}
             </span>
           </div>
+          <button
+            className="btn btn-ghost"
+            onClick={handleLogout}
+            style={{ fontSize: "9px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.8px", color: "#f87171" }}
+          >
+            <Icon name="log-out" size={13} />
+            Logout
+          </button>
         </div>
       </header>
 
@@ -330,7 +442,9 @@ function App() {
                   "Hybrid Retrieval (Vector + BM25)",
                   "Document Summarization",
                   "Witty/Dry-witted AI Personality (Noir)",
-                  "Fallback general conversation"
+                  "Fallback general conversation",
+                  "JWT Token Authentication & Secured Routes",
+                  "Turn-by-turn Chat History & Session Memory"
                 ].map(function (f, i) {
                   return (
                     <div className="feature-item" key={"ach-" + i}>
@@ -347,10 +461,8 @@ function App() {
               <div className="feature-list">
                 {[
                   "Multi-Agent RAG Orchestration",
-                  "Authentication with JWT tokens",
                   "Citations, Reranking & Query Expansion",
-                  "Multi-Doc index query routing & PPTX parsing",
-                  "Chat history and memory stores"
+                  "Multi-Doc index query routing & PPTX parsing"
                 ].map(function (f, i) {
                   return (
                     <div className="feature-item" key={"pend-" + i}>

@@ -1,10 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import os
 import shutil
 import subprocess
 import sys
+import jwt
+import datetime
 
 # Import in-process RAG engine for instant query retrieval times (<5s)
 from query import rag_engine
@@ -19,9 +22,26 @@ app.add_middleware(
 )
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg"}
+SECRET_KEY = "noir-super-secret-key-12345"
+security = HTTPBearer()
 
 class QueryRequest(BaseModel):
     query: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        username: str = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="Invalid token: missing username claim")
+        return username
+    except jwt.PyJWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid or expired credentials: {str(e)}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -33,8 +53,21 @@ async def startup_event():
     except Exception as e:
         print(f"RAG Engine preload failed: {e}. It will load dynamically on first prompt.")
 
+@app.post("/login")
+async def login(credentials: LoginRequest):
+    # Simplistic check: Allow admin/admin or any user with password 'password'
+    if (credentials.username == "admin" and credentials.password == "admin") or credentials.password == "password":
+        payload = {
+            "sub": credentials.username,
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        }
+        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        return {"token": token, "username": credentials.username}
+    else:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -72,19 +105,21 @@ async def upload_file(file: UploadFile = File(...)):
     return {"message": "File successfully ingested and indexed.", "details": result.stdout}
 
 @app.post("/query")
-async def query_document(request: QueryRequest):
+async def query_document(request: QueryRequest, current_user: str = Depends(get_current_user)):
     try:
-        # Run directly in-process - completely bypassing subprocess overhead
-        response = rag_engine.query(request.query)
+        # Pass current_user as the session_id so that each user gets their own memory!
+        response = rag_engine.query(request.query, session_id=current_user)
         return {"response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 @app.post("/reset")
-async def reset_rag():
+async def reset_rag(current_user: str = Depends(get_current_user)):
     try:
         rag_engine.reset()
-        return {"message": "RAG engine index reset successfully."}
+        # Also clear the current user's specific history
+        rag_engine.history.pop(current_user, None)
+        return {"message": "RAG engine index and chat history reset successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
 

@@ -12,3 +12,5 @@ uvicorn
 python-multipart
 pypdf
 docx2txt
+pyjwt
+
