@@ -5,7 +5,7 @@
 
 const { useState, useRef, useCallback, useEffect } = React;
 
-const ALLOWED_EXTS = [".pdf", ".docx", ".doc", ".md", ".txt"];
+const ALLOWED_EXTS = [".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt"];
 
 
 
@@ -164,7 +164,7 @@ function App() {
     }
   }, []);
 
-  // ---- File handling ----
+  // ---- File handling (Auto-Ingestion) ----
   function handleFile(f) {
     if (!f) return;
     var ext = "." + f.name.split(".").pop().toLowerCase();
@@ -174,25 +174,19 @@ function App() {
       return;
     }
     setFile(f);
-    setStatus("idle");
-    setStatusText('Ready to ingest "' + f.name + '"');
-  }
-
-  function ingestFile() {
-    if (!file) return;
     setStatus("loading");
-    setStatusText("Ingesting\u2026");
-    setLogText("Starting ingestion pipeline\u2026");
+    setStatusText("Ingesting \"" + f.name + "\"\u2026");
+    setLogText("Starting ingestion pipeline for " + f.name + "\u2026");
 
     var formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", f);
 
     fetch("/upload", { method: "POST", body: formData })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         if (result.ok) {
           setStatus("ready");
-          setStatusText('"' + file.name + '" indexed \u2713');
+          setStatusText('"' + f.name + '" indexed \u2713');
           setLogText(result.data.details || "Done.");
         } else {
           setStatus("error");
@@ -330,7 +324,7 @@ function App() {
               Upload a document, ingest it into the hybrid index, then ask anything. Answers are synthesized from both semantic and keyword search.
             </p>
             <div className="landing-formats">
-              {["PDF", "DOCX", "DOC", "MD", "TXT"].map(function (f) {
+              {["PDF", "DOCX", "DOC", "CSV", "XLSX", "MD", "TXT"].map(function (f) {
                 return <span className="format-badge" key={f}>{f}</span>;
               })}
             </div>
@@ -370,7 +364,7 @@ function App() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.docx,.doc,.md,.txt"
+              accept=".pdf,.docx,.doc,.csv,.xlsx,.md,.txt"
               style={{ display: "none" }}
               onChange={function (e) { handleFile(e.target.files ? e.target.files[0] : null); }}
             />
@@ -398,9 +392,9 @@ function App() {
                   {file && (
                     <div className="file-chip">
                       <span className="name">{"\uD83D\uDCCE " + file.name}</span>
-                      {status === "idle" && (
-                        <button className="ingest-btn" onClick={ingestFile}>Ingest</button>
-                      )}
+                      {status === "loading" && <span className="status-indicator loading">...</span>}
+                      {status === "ready" && <span className="status-indicator success">✓</span>}
+                      {status === "error" && <span className="status-indicator error">✗</span>}
                     </div>
                   )}
                 </div>

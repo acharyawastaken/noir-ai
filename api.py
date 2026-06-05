@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".md", ".txt"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt"}
 
 class QueryRequest(BaseModel):
     query: str
