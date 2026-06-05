@@ -1,0 +1,7 @@
+langchain
+langchain-community
+langchain-openai
+chromadb
+rank_bm25
+python-dotenv
+tiktoken

@@ -1,0 +1,14 @@
+langchain
+langchain-community
+langchain-openai
+langchain-ollama
+langchain-classic
+chromadb
+rank_bm25
+python-dotenv
+tiktoken
+fastapi
+uvicorn
+python-multipart
+pypdf
+docx2txt
