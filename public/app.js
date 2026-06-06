@@ -5,7 +5,7 @@
 
 const { useState, useRef, useCallback, useEffect } = React;
 
-const ALLOWED_EXTS = [".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg"];
+const ALLOWED_EXTS = [".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg", ".pptx"];
 
 
 
@@ -85,12 +85,29 @@ function TypingIndicator() {
 
 // ── Message Bubble with typewriter for assistant ──
 function MessageBubble({ msg, isLatest }) {
+  var routeLabel = null;
+  if (msg.role === "assistant" && msg.route) {
+    if (msg.route === "general") {
+      routeLabel = { icon: "message-square", text: "Conversational Chat (No Search Needed)", color: "#10b981" };
+    } else if (msg.route === "single") {
+      routeLabel = { icon: "file-text", text: "Routed: " + (msg.target_doc || "Single Document"), color: "#3b82f6" };
+    } else if (msg.route === "multi") {
+      routeLabel = { icon: "database", text: "Routed: Multi-Doc Hybrid Search", color: "#8b5cf6" };
+    }
+  }
+
   return (
     <div className={"msg " + msg.role + " msg-enter"}>
       {msg.role === "assistant" && (
         <div className="msg-avatar">{"\u2726"}</div>
       )}
       <div className="msg-bubble">
+        {routeLabel && (
+          <div className="msg-route-pill" style={{ borderColor: routeLabel.color + "25", color: routeLabel.color }}>
+            <Icon name={routeLabel.icon} size={11} />
+            <span style={{ marginLeft: "4px" }}>{routeLabel.text}</span>
+          </div>
+        )}
         <div style={{ whiteSpace: "pre-wrap" }}>
           {msg.role === "assistant" && isLatest ? (
             <TypewriterText text={msg.text} speed={32} />
@@ -252,20 +269,75 @@ function App() {
     }
   }
 
-  // Clear backend index on refresh / mount (only if authenticated)
-  useEffect(function () {
+  var [documents, setDocuments] = useState([]);
+
+  function fetchDocuments() {
     if (!token) return;
+    fetch("/documents", {
+      headers: { "Authorization": "Bearer " + token }
+    })
+      .then(function (res) {
+        if (res.ok) return res.json();
+      })
+      .then(function (data) {
+        if (data && data.documents) {
+          setDocuments(data.documents);
+        }
+      })
+      .catch(function (err) {
+        console.error("Failed to fetch documents:", err);
+      });
+  }
+
+  // Fetch documents on mount / login
+  useEffect(function () {
+    fetchDocuments();
+  }, [token]);
+
+  function handleResetIndex() {
+    if (!token) return;
+    if (!confirm("Are you sure you want to delete all indexed documents? This cannot be undone.")) return;
+    
     fetch("/reset", {
       method: "POST",
       headers: { "Authorization": "Bearer " + token }
     })
-      .then(function () {
-        console.log("Session reset complete.");
+      .then(function (res) {
+        if (res.ok) {
+          alert("Index reset successfully!");
+          fetchDocuments();
+        } else {
+          alert("Failed to reset index.");
+        }
       })
       .catch(function (err) {
-        console.error("Session reset failed:", err);
+        alert("Error resetting index: " + err.message);
       });
-  }, [token]);
+  }
+
+  function handleDeleteDocument(docId) {
+    if (!token) return;
+    if (!confirm("Are you sure you want to delete document \"" + docId + "\"?")) return;
+    
+    fetch("/documents/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token
+      },
+      body: JSON.stringify({ doc_id: docId })
+    })
+      .then(function (res) {
+        if (res.ok) {
+          fetchDocuments();
+        } else {
+          alert("Failed to delete document.");
+        }
+      })
+      .catch(function (err) {
+        alert("Error deleting document: " + err.message);
+      });
+  }
 
   function handleLogin(e) {
     if (e) e.preventDefault();
@@ -357,6 +429,7 @@ function App() {
             statusText: '"' + f.name + '" indexed \u2713',
             logText: result.data.details || "Done."
           });
+          fetchDocuments();
         } else {
           updateActiveStore({
             status: "error",
@@ -408,6 +481,8 @@ function App() {
           id: botId,
           role: "assistant",
           text: result.ok ? answer : "\u26A0 " + (result.data.detail || "Something went wrong."),
+          route: result.ok ? result.data.route : null,
+          target_doc: result.ok ? result.data.target_doc : null
         };
         setLatestAssistantId(botId);
         appendMessageToActiveStore(botMsg);
@@ -535,6 +610,45 @@ function App() {
           </div>
         </div>
 
+        <div className="sidebar-docs-container">
+          <div className="sidebar-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Indexed Documents</span>
+            {documents.length > 0 && (
+              <button onClick={handleResetIndex} style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", fontSize: "10px", padding: 0 }} title="Reset Index">
+                Reset All
+              </button>
+            )}
+          </div>
+          <div className="sidebar-docs-list">
+            {documents.length === 0 ? (
+              <div style={{ fontSize: "10px", color: "var(--text-tertiary)", padding: "4px 0", fontStyle: "italic" }}>
+                No documents indexed
+              </div>
+            ) : (
+              documents.map(function (d) {
+                var ext = "." + d.split(".").pop().toLowerCase();
+                var iconName = "file-text";
+                if (ext === ".pdf") iconName = "file";
+                else if (ext === ".pptx" || ext === ".ppt") iconName = "presentation";
+                else if (ext === ".csv" || ext === ".xlsx" || ext === ".xls") iconName = "table";
+                else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg") iconName = "image";
+                
+                return (
+                  <div key={d} className="sidebar-doc-item">
+                    <div style={{ display: "flex", alignItems: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: "8px" }}>
+                      <Icon name={iconName} size={12} style={{ marginRight: "8px", opacity: 0.6, flexShrink: 0 }} />
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={d}>{d}</span>
+                    </div>
+                    <button onClick={function () { handleDeleteDocument(d); }} className="doc-delete-btn" title="Delete document">
+                      <Icon name="x" size={12} />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
         <div className="sidebar-footer">
           <div className="user-profile">
             <div className="avatar">{(localStorage.getItem("noir_user") || "U").substring(0, 1).toUpperCase()}</div>
@@ -604,7 +718,7 @@ function App() {
                 Upload a document, ingest it into the hybrid index, then ask anything. Answers are synthesized from both semantic and keyword search.
               </p>
               <div className="landing-formats">
-                {["PDF", "DOCX", "DOC", "CSV", "XLSX", "MD", "TXT", "PNG", "JPG", "JPEG"].map(function (f) {
+                {["PDF", "DOCX", "DOC", "PPTX", "CSV", "XLSX", "MD", "TXT", "PNG", "JPG", "JPEG"].map(function (f) {
                   return <span className="format-badge" key={f}>{f}</span>;
                 })}
               </div>
@@ -644,7 +758,7 @@ function App() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.docx,.doc,.csv,.xlsx,.md,.txt,.png,.jpg,.jpeg"
+                accept=".pdf,.docx,.doc,.csv,.xlsx,.md,.txt,.png,.jpg,.jpeg,.pptx"
                 style={{ display: "none" }}
                 onChange={function (e) { handleFile(e.target.files ? e.target.files[0] : null); }}
               />
@@ -655,7 +769,7 @@ function App() {
                   value={input}
                   onChange={function (e) { setInput(e.target.value); autoResize(); }}
                   onKeyDown={handleKeyDown}
-                  placeholder={status === "ready" ? "Ask anything about your document\u2026" : "Upload a document to begin\u2026"}
+                  placeholder={status === "loading" ? "Processing document, please wait..." : "Ask anything (General, Single-Doc, or Multi-Doc RAG)..."}
                   rows={1}
                   disabled={busy}
                 />

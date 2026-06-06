@@ -148,13 +148,41 @@ def ingest_document(file_path):
                         page_content=sanitise_text(row_text), 
                         metadata={"source": file_path, "sheet": sheet_name, "row": row_idx}
                     ))
+
+    elif ext == ".pptx":
+        try:
+            from pptx import Presentation
+            prs = Presentation(file_path)
+            for i, slide in enumerate(prs.slides):
+                slide_text_parts = []
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_text_parts.append(shape.text.strip())
+                    if shape.has_table:
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                if cell.text.strip():
+                                    slide_text_parts.append(cell.text.strip())
+                slide_text = "\n".join(slide_text_parts)
+                if slide_text.strip():
+                    docs.append(Document(
+                        page_content=sanitise_text(slide_text),
+                        metadata={"source": file_path, "slide": i + 1}
+                    ))
+        except Exception as e:
+            raise ValueError(f"Failed to parse PowerPoint presentation: {e}")
     else:
         raise ValueError(f"Unsupported file type: {ext}")
         
     if not docs:
         raise ValueError(f"No text content could be extracted from {file_path}")
         
-    print(f"Loaded {len(docs)} document section(s).")
+    # Assign doc_id to every loaded document
+    doc_id = os.path.basename(file_path)
+    for d in docs:
+        d.metadata["doc_id"] = doc_id
+        
+    print(f"Loaded {len(docs)} document section(s) for doc_id: {doc_id}.")
     
     print("Splitting text into chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
@@ -166,6 +194,8 @@ def ingest_document(file_path):
     
     # Filter out empty splits
     splits = [s for s in splits if s.page_content.strip()]
+    for s in splits:
+        s.metadata["doc_id"] = doc_id
     print(f"Created {len(splits)} chunks.")
 
     print("Generating Vector Embeddings and saving to Chroma in batches...")
@@ -175,15 +205,16 @@ def ingest_document(file_path):
 
     embeddings = OllamaEmbeddings(model=ollama_embed_model)
 
-    # Always wipe the old index before writing a fresh one
-    if os.path.exists(chroma_db_path):
-        import shutil as _shutil
-        _shutil.rmtree(chroma_db_path)
-        print(f"Cleared old chroma_db index at {chroma_db_path}.")
+    # Use existing Chroma database, clear old version of this document if it exists, and append new chunks.
+    vectorstore = Chroma(persist_directory=chroma_db_path, embedding_function=embeddings)
+    try:
+        print(f"Checking for existing index entries for {doc_id} to prevent duplication...")
+        vectorstore.delete(where={"doc_id": doc_id})
+        print(f"Cleared existing chunks for {doc_id}.")
+    except Exception as e:
+        print(f"No previous index entry to clean or collection is empty: {e}")
     
     batch_size = 50
-    vectorstore = Chroma(persist_directory=chroma_db_path, embedding_function=embeddings)
-    
     for i in range(0, len(splits), batch_size):
         batch = splits[i:i + batch_size]
         print(f"Processing batch {i//batch_size + 1} (chunks {i} to {min(i+batch_size, len(splits))})...")
@@ -191,12 +222,33 @@ def ingest_document(file_path):
         
     print(f"Vectors saved to {chroma_db_path}")
 
-    print("Generating BM25 Index...")
-    bm25_retriever = BM25Retriever.from_documents(splits)
+    print("Generating Multi-Doc BM25 Indices...")
+    # Retrieve all documents currently in the collection to build global and per-doc BM25 indexes
+    all_data = vectorstore.get(include=["documents", "metadatas"])
+    all_docs = []
+    docs_by_id = {}
     
-    with open(bm25_index_path, "wb") as f:
-        pickle.dump(bm25_retriever, f)
-    print(f"BM25 index saved to {bm25_index_path}")
+    for doc_text, meta in zip(all_data["documents"], all_data["metadatas"]):
+        doc = Document(page_content=doc_text, metadata=meta)
+        all_docs.append(doc)
+        d_id = meta.get("doc_id", "unknown")
+        if d_id not in docs_by_id:
+            docs_by_id[d_id] = []
+        docs_by_id[d_id].append(doc)
+        
+    if all_docs:
+        bm25_data = {
+            "global": BM25Retriever.from_documents(all_docs),
+            "documents": {}
+        }
+        for d_id, doc_splits in docs_by_id.items():
+            bm25_data["documents"][d_id] = BM25Retriever.from_documents(doc_splits)
+            
+        with open(bm25_index_path, "wb") as f:
+            pickle.dump(bm25_data, f)
+        print(f"BM25 indices saved to {bm25_index_path} ({len(docs_by_id)} documents indexed)")
+    else:
+        print("No documents found in store, skipping BM25 indexing.")
 
     print("Ingestion complete!")
 

@@ -1159,3 +1159,76 @@ body {
   flex: 1;
   height: 100%;
 }
+
+/* Document List and Route Pill Styles */
+.sidebar-docs-container {
+  border-top: 1px solid var(--border-subtle);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  min-height: 120px;
+}
+
+.sidebar-docs-list {
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-doc-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.sidebar-doc-item:hover {
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.sidebar-doc-item .doc-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+  display: flex;
+  align-items: center;
+  padding: 2px;
+}
+
+.sidebar-doc-item:hover .doc-delete-btn {
+  opacity: 0.8;
+}
+
+.sidebar-doc-item:hover .doc-delete-btn:hover {
+  opacity: 1;
+  color: #f87171;
+}
+
+.msg-route-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid;
+  margin-bottom: 8px;
+  width: fit-content;
+}

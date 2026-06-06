@@ -24,7 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".csv", ".xlsx", ".md", ".txt", ".png", ".jpg", ".jpeg", ".pptx"}
 SECRET_KEY = os.getenv("SECRET_KEY", "noir-super-secret-key-12345")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
@@ -89,8 +89,8 @@ async def upload_file(file: UploadFile = File(...), current_user: str = Depends(
         
     try:
         # Release the in-memory ChromaDB connection FIRST so ingest.py can safely
-        # delete and recreate chroma_db without hitting Windows file lock errors.
-        rag_engine.reset()
+        # write to chroma_db without hitting Windows file lock errors.
+        rag_engine.unload()
 
         result = subprocess.run(
             [sys.executable, "ingest.py", file_path], 
@@ -111,6 +111,9 @@ async def upload_file(file: UploadFile = File(...), current_user: str = Depends(
             
     return {"message": "File successfully ingested and indexed.", "details": result.stdout}
 
+class DeleteDocumentRequest(BaseModel):
+    doc_id: str
+
 @app.post("/query")
 async def query_document(request: QueryRequest, current_user: str = Depends(get_current_user)):
     try:
@@ -120,13 +123,21 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
         # Check if the chat history is empty for this session (meaning first turn)
         is_first_turn = len(rag_engine.history.get(backend_session_id, [])) == 0
         
-        response = rag_engine.query(request.query, session_id=backend_session_id)
+        result = rag_engine.query(request.query, session_id=backend_session_id)
+        response_text = result["response"]
+        route = result["route"]
+        target_doc = result["target_doc"]
         
         title = None
         if is_first_turn:
-            title = rag_engine.generate_chat_title(request.query, response)
+            title = rag_engine.generate_chat_title(request.query, response_text)
             
-        return {"response": response, "title": title}
+        return {
+            "response": response_text,
+            "title": title,
+            "route": route,
+            "target_doc": target_doc
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
@@ -142,6 +153,26 @@ async def reset_rag(current_user: str = Depends(get_current_user)):
         return {"message": "RAG engine index and chat history reset successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
+
+@app.get("/documents")
+async def list_documents(current_user: str = Depends(get_current_user)):
+    try:
+        if not rag_engine.is_loaded:
+            rag_engine.load()
+        if not rag_engine.is_loaded:
+            return {"documents": []}
+        docs = list(rag_engine.bm25_retrievers.keys()) if hasattr(rag_engine, 'bm25_retrievers') else []
+        return {"documents": docs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/delete")
+async def delete_document(request: DeleteDocumentRequest, current_user: str = Depends(get_current_user)):
+    try:
+        rag_engine.delete_document(request.doc_id)
+        return {"message": f"Document '{request.doc_id}' deleted successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -11,7 +11,7 @@ const API_URL = process.env.API_URL || "http://localhost:8000";
 const apiProxy = createProxyMiddleware({
   target: API_URL,
   changeOrigin: true,
-  pathFilter: ["/upload", "/query", "/reset", "/login"],
+  pathFilter: ["/upload", "/query", "/reset", "/login", "/documents", "/documents/delete"],
   logger: console,
 });
 

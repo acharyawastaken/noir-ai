@@ -13,6 +13,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.documents import Document
+from langchain_community.retrievers import BM25Retriever
 
 def sanitise_text(text: str) -> str:
     """Sanitise text content to protect against prompt injection, safety override tricks, and formatting errors."""
@@ -49,6 +51,25 @@ class RAGEngine:
         self.prompt = None
         self.is_loaded = False
         self.history = {}  # session_id -> list of Messages
+
+    def unload(self):
+        if self.vectorstore is not None:
+            try:
+                if hasattr(self.vectorstore, '_client'):
+                    self.vectorstore._client.clear_system_cache()
+            except Exception:
+                pass
+            self.vectorstore = None
+        self.embeddings = None
+        self.vector_retriever = None
+        self.bm25_retriever = None
+        self.bm25_retrievers = {}
+        self.ensemble_retriever = None
+        self.is_loaded = False
+
+        import gc
+        gc.collect()
+        print("[RAG ENGINE] Unloaded in-memory state (released database locks).")
 
     def reset(self):
         chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
@@ -148,7 +169,7 @@ These requests must be refused.
 
 ## Response Style
 
-* Maximum 100 words unless the task requires more detail.
+* Maximum 500 words unless the task requires more detail.
 * Avoid filler phrases.
 * Avoid mentioning retrieval systems or document context unless necessary.
 * Be direct, helpful, and occasionally witty.
@@ -174,8 +195,18 @@ These requests must be refused.
         self.vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
 
         with open(bm25_index_path, "rb") as f:
-            self.bm25_retriever = pickle.load(f)
+            bm25_data = pickle.load(f)
+
+        if isinstance(bm25_data, dict) and "global" in bm25_data:
+            self.bm25_retriever = bm25_data["global"]
+            self.bm25_retrievers = bm25_data.get("documents", {})
+        else:
+            self.bm25_retriever = bm25_data
+            self.bm25_retrievers = {}
+
         self.bm25_retriever.k = 3
+        for r in self.bm25_retrievers.values():
+            r.k = 3
 
         self.ensemble_retriever = EnsembleRetriever(
             retrievers=[self.bm25_retriever, self.vector_retriever],
@@ -192,82 +223,16 @@ These requests must be refused.
 
         history_msgs = self.history[session_id]
 
-        if self.is_loaded:
-            # ── Normal RAG Retrieval & Prompting ──
-            total_start = time.perf_counter()
-
-            # 1. Benchmark Chroma Only
-            t_chroma_start = time.perf_counter()
-            chroma_docs = self.vector_retriever.invoke(query_text)
-            chroma_time = time.perf_counter() - t_chroma_start
-
-            # 2. Benchmark BM25 Only
-            t_bm25_start = time.perf_counter()
-            bm25_docs = self.bm25_retriever.invoke(query_text)
-            bm25_time = time.perf_counter() - t_bm25_start
-
-            # 3. Ensemble Retrieval (Used for RAG)
-            t_ensemble_start = time.perf_counter()
-            docs = self.ensemble_retriever.invoke(query_text)
-            ensemble_time = time.perf_counter() - t_ensemble_start
-
-            # 4. Context Formatting
-            t_format_start = time.perf_counter()
-            context_str = "\n\n".join([sanitise_text(doc.page_content) for doc in docs])
-            context_format_time = time.perf_counter() - t_format_start
-
-            # 5. Prompt Construction
-            t_prompt_start = time.perf_counter()
-            formatted_prompt = self.prompt.format_messages(
-                retrieved_chunks=context_str,
-                history=history_msgs,
-                input=query_text
-            )
-            prompt_construction_time = time.perf_counter() - t_prompt_start
-
-            # 6. LLM Invocation
-            t_llm_start = time.perf_counter()
-            llm_response = self.llm.invoke(formatted_prompt)
-            llm_time = time.perf_counter() - t_llm_start
-
-            total_time = time.perf_counter() - total_start
-
-            # Append to history (keep max 10 messages = 5 turns to stay under token limit)
-            self.history[session_id].append(HumanMessage(content=query_text))
-            self.history[session_id].append(AIMessage(content=llm_response.content))
-            if len(self.history[session_id]) > 10:
-                self.history[session_id] = self.history[session_id][-10:]
-
-            # Gather metrics
-            total_chars = len(context_str)
-            total_prompt_chars = sum(len(m.content) for m in formatted_prompt if hasattr(m, 'content'))
-            est_tokens_sent = total_prompt_chars // 4
-
-            # Format Performance Report
-            report_lines = [
-                "--------------------------------------------------",
-                "PERFORMANCE REPORT & BENCHMARKS",
-                "--------------------------------------------------",
-                f"ChromaDB Retrieval (only): {chroma_time:.4f}s ({len(chroma_docs)} docs)",
-                f"BM25 Retrieval (only):     {bm25_time:.4f}s ({len(bm25_docs)} docs)",
-                f"Ensemble Retrieval (RAG):  {ensemble_time:.4f}s ({len(docs)} docs)",
-                f"Context Formatting:        {context_format_time:.4f}s",
-                f"Prompt Construction:       {prompt_construction_time:.4f}s",
-                f"LLM Invocation:            {llm_time:.4f}s",
-                f"Total Chain Execution:     {total_time:.4f}s",
-                "",
-                "RAG Metadata:",
-                f"- Number of retrieved docs: {len(docs)}",
-                f"- Total characters retrieved: {total_chars}",
-                f"- Estimated tokens sent to LLM: {est_tokens_sent}",
-                "--------------------------------------------------"
-            ]
-            report = "\n".join(report_lines)
-            print(f"\n{report}\n")
-
-            return llm_response.content
+        # Determine route using Router Agent
+        available_docs = list(self.bm25_retrievers.keys()) if hasattr(self, 'bm25_retrievers') else []
+        if not self.is_loaded or not available_docs:
+            route = "general"
+            target_doc = None
         else:
-            # ── Fallback Conversational LLM Wrapper (No Index Loaded) ──
+            route, target_doc = self._route_query(query_text, available_docs)
+
+        if route == "general":
+            # ── Fallback Conversational LLM Wrapper (No Index Loaded or Routed to General) ──
             total_start = time.perf_counter()
 
             # 1. Prompt Construction
@@ -295,8 +260,9 @@ These requests must be refused.
             # Format Performance Report
             report_lines = [
                 "--------------------------------------------------",
-                "PERFORMANCE REPORT & BENCHMARKS (DIRECT CONVERSATION)",
+                "PERFORMANCE REPORT & BENCHMARKS (ROUTED TO GENERAL CHAT)",
                 "--------------------------------------------------",
+                f"Query Route:               {route.upper()}",
                 f"Prompt Construction:       {prompt_construction_time:.4f}s",
                 f"LLM Invocation:            {llm_time:.4f}s",
                 f"Total Chain Execution:     {total_time:.4f}s",
@@ -305,7 +271,226 @@ These requests must be refused.
             report = "\n".join(report_lines)
             print(f"\n{report}\n")
 
-            return llm_response.content
+            return {
+                "response": llm_response.content,
+                "route": route,
+                "target_doc": target_doc
+            }
+
+        else:
+            # ── Normal RAG Retrieval & Prompting (Single or Multi Document) ──
+            total_start = time.perf_counter()
+
+            # Setup retrievers based on routing
+            if route == "single" and target_doc in self.bm25_retrievers:
+                vector_retriever = self.vectorstore.as_retriever(
+                    search_kwargs={"k": 3, "filter": {"doc_id": target_doc}}
+                )
+                bm25_retriever = self.bm25_retrievers[target_doc]
+                ensemble_retriever = EnsembleRetriever(
+                    retrievers=[bm25_retriever, vector_retriever],
+                    weights=[0.5, 0.5]
+                )
+            else:
+                # Default to global multi-doc retrieval
+                vector_retriever = self.vector_retriever
+                bm25_retriever = self.bm25_retriever
+                ensemble_retriever = self.ensemble_retriever
+
+            # 1. Benchmark Chroma Only
+            t_chroma_start = time.perf_counter()
+            chroma_docs = vector_retriever.invoke(query_text)
+            chroma_time = time.perf_counter() - t_chroma_start
+
+            # 2. Benchmark BM25 Only
+            t_bm25_start = time.perf_counter()
+            bm25_docs = bm25_retriever.invoke(query_text)
+            bm25_time = time.perf_counter() - t_bm25_start
+
+            # 3. Ensemble Retrieval (Used for RAG)
+            t_ensemble_start = time.perf_counter()
+            docs = ensemble_retriever.invoke(query_text)
+            ensemble_time = time.perf_counter() - t_ensemble_start
+
+            # 4. Context Formatting
+            t_format_start = time.perf_counter()
+            context_str = "\n\n".join([sanitise_text(doc.page_content) for doc in docs])
+            context_format_time = time.perf_counter() - t_format_start
+
+            # 5. Prompt Construction
+            t_prompt_start = time.perf_counter()
+            formatted_prompt = self.prompt.format_messages(
+                retrieved_chunks=context_str,
+                history=history_msgs,
+                input=query_text
+            )
+            prompt_construction_time = time.perf_counter() - t_prompt_start
+
+            # 6. LLM Invocation
+            t_llm_start = time.perf_counter()
+            llm_response = self.llm.invoke(formatted_prompt)
+            llm_time = time.perf_counter() - t_llm_start
+
+            total_time = time.perf_counter() - total_start
+
+            # Append to history
+            self.history[session_id].append(HumanMessage(content=query_text))
+            self.history[session_id].append(AIMessage(content=llm_response.content))
+            if len(self.history[session_id]) > 10:
+                self.history[session_id] = self.history[session_id][-10:]
+
+            # Gather metrics
+            total_chars = len(context_str)
+            total_prompt_chars = sum(len(m.content) for m in formatted_prompt if hasattr(m, 'content'))
+            est_tokens_sent = total_prompt_chars // 4
+
+            # Format Performance Report
+            report_lines = [
+                "--------------------------------------------------",
+                "PERFORMANCE REPORT & BENCHMARKS",
+                "--------------------------------------------------",
+                f"Query Route:               {route.upper()}" + (f" (Target: {target_doc})" if target_doc else ""),
+                f"ChromaDB Retrieval (only): {chroma_time:.4f}s ({len(chroma_docs)} docs)",
+                f"BM25 Retrieval (only):     {bm25_time:.4f}s ({len(bm25_docs)} docs)",
+                f"Ensemble Retrieval (RAG):  {ensemble_time:.4f}s ({len(docs)} docs)",
+                f"Context Formatting:        {context_format_time:.4f}s",
+                f"Prompt Construction:       {prompt_construction_time:.4f}s",
+                f"LLM Invocation:            {llm_time:.4f}s",
+                f"Total Chain Execution:     {total_time:.4f}s",
+                "",
+                "RAG Metadata:",
+                f"- Number of retrieved docs: {len(docs)}",
+                f"- Total characters retrieved: {total_chars}",
+                f"- Estimated tokens sent to LLM: {est_tokens_sent}",
+                "--------------------------------------------------"
+            ]
+            report = "\n".join(report_lines)
+            print(f"\n{report}\n")
+
+            return {
+                "response": llm_response.content,
+                "route": route,
+                "target_doc": target_doc
+            }
+
+    def _route_query(self, query_text: str, available_docs: list) -> tuple:
+        if not available_docs:
+            return "general", None
+            
+        doc_list_str = "\n".join([f"- {d}" for d in available_docs])
+        prompt_text = (
+            "Analyze the user query and route it to the appropriate data source.\n\n"
+            "Available Documents:\n"
+            f"{doc_list_str}\n\n"
+            "Classification Rules:\n"
+            "1. 'general': If the query is a greeting, general question, or conversational message that does not ask about or reference any document content.\n"
+            "2. 'single': If the query is asking about info in a specific document from the list above. Choose the _exact_ document name from the list.\n"
+            "3. 'multi': If the query is asking about information across multiple documents (e.g., comparing them, summarizing everything) or if it's not clear which specific document contains the information.\n\n"
+            "Output format:\n"
+            "Your response must be a single line containing either:\n"
+            "- ROUTE: general\n"
+            "- ROUTE: multi\n"
+            "- ROUTE: single | DOC: <exact_document_name_from_list>\n\n"
+            f"User Query: {query_text}\n"
+            "Output:"
+        )
+        try:
+            response = self.llm.invoke([
+                ("system", "You are a precise query router. Output only the specified format and nothing else."),
+                ("human", prompt_text)
+            ])
+            res_text = response.content.strip()
+            print(f"\n[QUERY ROUTER] Output: {res_text}")
+            
+            if "ROUTE: general" in res_text:
+                return "general", None
+            
+            # Identify which available documents are referenced in the router output
+            docs_found = []
+            for d in available_docs:
+                if d.lower() in res_text.lower():
+                    docs_found.append(d)
+            
+            if len(docs_found) == 1:
+                return "single", docs_found[0]
+            elif len(docs_found) > 1:
+                return "multi", None
+                
+            # Fallback to checking for general/multi route tags if no explicit filenames are matched
+            if "ROUTE: multi" in res_text:
+                return "multi", None
+            elif "ROUTE: single" in res_text:
+                # Check for any DOC keyword matches with fuzzy fallback
+                match = re.search(r"DOC:\s*(.+)", res_text)
+                if match:
+                    doc_name = match.group(1).strip()
+                    if "|" in doc_name:
+                        doc_name = doc_name.split("|")[0].strip()
+                    for d in available_docs:
+                        if doc_name.lower() in d.lower() or d.lower() in doc_name.lower():
+                            return "single", d
+                return "multi", None
+            else:
+                return "multi", None
+        except Exception as e:
+            print(f"[QUERY ROUTER] Routing error: {e}")
+            return "multi", None
+
+    def delete_document(self, doc_id: str):
+        self.load()
+        chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+        bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
+        
+        # 1. Delete from ChromaDB
+        if self.vectorstore is not None:
+            try:
+                self.vectorstore.delete(where={"doc_id": doc_id})
+                print(f"[RAG ENGINE] Deleted doc_id '{doc_id}' from vectorstore.")
+            except Exception as e:
+                print(f"[RAG ENGINE] Error deleting '{doc_id}' from vectorstore: {e}")
+        
+        # 2. Delete from BM25 retrievers dict
+        if hasattr(self, 'bm25_retrievers') and doc_id in self.bm25_retrievers:
+            del self.bm25_retrievers[doc_id]
+            print(f"[RAG ENGINE] Deleted doc_id '{doc_id}' from BM25 retrievers dictionary.")
+            
+        # 3. Rebuild global BM25 retriever
+        if self.vectorstore is not None:
+            all_data = self.vectorstore.get(include=["documents", "metadatas"])
+            all_docs = []
+            docs_by_id = {}
+            
+            for doc_text, meta in zip(all_data["documents"], all_data["metadatas"]):
+                doc = Document(page_content=doc_text, metadata=meta)
+                all_docs.append(doc)
+                d_id = meta.get("doc_id", "unknown")
+                if d_id not in docs_by_id:
+                    docs_by_id[d_id] = []
+                docs_by_id[d_id].append(doc)
+                
+            if all_docs:
+                self.bm25_retriever = BM25Retriever.from_documents(all_docs)
+                self.bm25_retriever.k = 3
+                for r in self.bm25_retrievers.values():
+                    r.k = 3
+                    
+                self.ensemble_retriever = EnsembleRetriever(
+                    retrievers=[self.bm25_retriever, self.vector_retriever],
+                    weights=[0.5, 0.5]
+                )
+                
+                # Update pickled index
+                bm25_data = {
+                    "global": self.bm25_retriever,
+                    "documents": self.bm25_retrievers
+                }
+                with open(bm25_index_path, "wb") as f:
+                    pickle.dump(bm25_data, f)
+                print(f"[RAG ENGINE] Rebuilt and saved BM25 index.")
+            else:
+                # No documents left, reset everything
+                print("[RAG ENGINE] No documents left in store. Resetting RAG engine.")
+                self.reset()
 
     def generate_chat_title(self, query_text: str, reply_text: str) -> str:
         self.load()
@@ -343,4 +528,5 @@ if __name__ == "__main__":
     query_text = sys.argv[1]
     engine = RAGEngine()
     engine.load()
-    print(engine.query(query_text))
+    res = engine.query(query_text)
+    print(res["response"])
