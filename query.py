@@ -324,7 +324,7 @@ These requests must be refused.
             
         self.is_loaded = True
 
-    def query(self, query_text, session_id="default"):
+    def query(self, query_text, session_id="default", model_profile="flash"):
         self.load()
 
         # Load chat history from SQLite persistence
@@ -353,7 +353,8 @@ These requests must be refused.
 
             # 2. LLM Invocation
             t_llm_start = time.perf_counter()
-            llm_response = self.light_llm.invoke(formatted_prompt)
+            active_llm = self.light_llm if model_profile == "flash" else self.research_llm
+            llm_response = active_llm.invoke(formatted_prompt)
             llm_time = time.perf_counter() - t_llm_start
 
             total_time = time.perf_counter() - total_start
@@ -454,7 +455,8 @@ These requests must be refused.
 
             # 6. LLM Invocation
             t_llm_start = time.perf_counter()
-            llm_response = self.research_llm.invoke(formatted_prompt)
+            active_llm = self.light_llm if model_profile == "flash" else self.research_llm
+            llm_response = active_llm.invoke(formatted_prompt)
             llm_time = time.perf_counter() - t_llm_start
 
             total_time = time.perf_counter() - total_start

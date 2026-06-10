@@ -207,6 +207,16 @@ function App() {
   var [showLog, setShowLog] = useState(false);
   var [latestAssistantId, setLatestAssistantId] = useState(null);
 
+  // Model Profile State (noir flash vs noir deep)
+  var [modelProfile, setModelProfile] = useState(function () {
+    return localStorage.getItem("noir_model_profile") || "flash";
+  });
+
+  function handleModelProfileChange(profile) {
+    setModelProfile(profile);
+    localStorage.setItem("noir_model_profile", profile);
+  }
+
   // Authentication State
   var [token, setToken] = useState(localStorage.getItem("noir_token") || "");
   var [username, setUsername] = useState("");
@@ -496,7 +506,7 @@ function App() {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + token
       },
-      body: JSON.stringify({ query: q, session_id: activeChatId }),
+      body: JSON.stringify({ query: q, session_id: activeChatId, model_profile: modelProfile }),
     })
       .then(function (res) {
         if (res.status === 401) {
@@ -567,7 +577,7 @@ function App() {
         setBusy(false);
         scrollToBottom();
       });
-  }, [input, busy, scrollToBottom, token, activeChatId, messages.length]);
+  }, [input, busy, scrollToBottom, token, activeChatId, messages.length, modelProfile]);
 
   function handleQuickAction(text) {
     setInput(text);
@@ -727,6 +737,17 @@ function App() {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div className="model-selector">
+              <Icon name="cpu" size={12} style={{ marginRight: "6px", color: modelProfile === "deep" ? "#8b5cf6" : "#3b82f6" }} />
+              <select
+                value={modelProfile}
+                onChange={function (e) { handleModelProfileChange(e.target.value); }}
+                className="model-select"
+              >
+                <option value="flash">noir flash (qwen)</option>
+                <option value="deep">noir deep (gemma)</option>
+              </select>
+            </div>
             {logText && (
               <button
                 className="btn btn-ghost"

@@ -1311,3 +1311,38 @@ body {
 .msg-source-card:hover .msg-source-snippet {
   color: var(--text-secondary);
 }
+
+/* ---- Model Selector Dropdown ---- */
+.model-selector {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  transition: all var(--transition-fast);
+}
+
+.model-selector:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-medium);
+}
+
+.model-select {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  padding-right: 4px;
+}
+
+.model-select option {
+  background: #0B0E14; /* Match dark theme */
+  color: var(--text-secondary);
+}

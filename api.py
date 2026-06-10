@@ -35,6 +35,7 @@ security = HTTPBearer()
 class QueryRequest(BaseModel):
     query: str
     session_id: str = "default"
+    model_profile: str = "flash"
 
 class LoginRequest(BaseModel):
     username: str
@@ -123,7 +124,7 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
         # Check if the chat history is empty for this session (meaning first turn)
         is_first_turn = len(rag_engine.get_history(backend_session_id)) == 0
         
-        result = rag_engine.query(request.query, session_id=backend_session_id)
+        result = rag_engine.query(request.query, session_id=backend_session_id, model_profile=request.model_profile)
         response_text = result["response"]
         route = result["route"]
         target_doc = result["target_doc"]
