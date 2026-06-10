@@ -118,6 +118,15 @@ class RAGEngine:
         except Exception as e:
             print(f"[CHAT HISTORY] Error clearing user history: {e}")
 
+    def clear_session_history(self, session_id: str):
+        try:
+            conn = get_db_connection()
+            conn.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[CHAT HISTORY] Error clearing session history: {e}")
+
     def reset_history(self):
         try:
             conn = get_db_connection()
@@ -202,7 +211,7 @@ class RAGEngine:
             self.light_llm = ChatOllama(
                 model=light_model,
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
-                num_predict=int(os.getenv("LLM_NUM_PREDICT", "256")),
+                num_predict=int(os.getenv("LLM_NUM_PREDICT", "2048")),
                 num_ctx=2048,
             )
             self.llm = self.light_llm
@@ -212,7 +221,7 @@ class RAGEngine:
             self.research_llm = ChatOllama(
                 model=research_model,
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
-                num_predict=int(os.getenv("LLM_NUM_PREDICT", "256")),
+                num_predict=int(os.getenv("LLM_NUM_PREDICT", "2048")),
                 num_ctx=int(os.getenv("LLM_NUM_CTX", "8192")), # Large 8K context window for research agent
             )
 
@@ -280,15 +289,33 @@ These requests must be refused.
         if self.flow_prompt is None:
             self.flow_prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a precise systems analyst and flowchart architect.
-Your job is to read the retrieved document context (if any) and translate the key concepts, workflows, step-by-step procedures, or logical structures into a sequential visual flowchart in Mermaid.js syntax.
+Your job is to read the retrieved document context (if any) and translate the key concepts, workflows, step-by-step procedures, or logical structures into a structured JSON flowchart.
 
 ## Formatting Rules:
-1. Output ONLY a valid Mermaid.js flowchart code block (enclosed in ```mermaid and ```).
-2. Do NOT add conversational text, descriptions, introductions, or postscripts outside the code block.
-3. Use a clear layout direction, either top-down (`graph TD`) or left-to-right (`graph LR`).
-4. Keep node labels short, descriptive, and clean. Use brackets or quotes properly for text with special characters (e.g., `A["Ingest document chunks"] --> B["Split text"]`).
-5. Ensure there are no syntax errors in the Mermaid diagram.
-6. Provide a logical flow from starting conditions to the final outputs.
+1. You MUST output ONLY a valid JSON object matching the schema below.
+2. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Just output raw text JSON.
+3. Do NOT add conversational text, descriptions, introductions, or postscripts outside the JSON.
+4. Keep step descriptions very short and concise (under 25 words).
+
+## JSON Schema:
+{{
+  "title": "Short descriptive title of the workflow",
+  "steps": [
+    {{
+      "id": 1,
+      "title": "Step Title",
+      "description": "Concise explanation of this step",
+      "type": "start | process | decision | end"
+    }}
+  ],
+  "connections": [
+    {{
+      "from": 1,
+      "to": 2,
+      "label": "optional label (e.g. Yes or No)"
+    }}
+  ]
+}}
 
 Retrieved Document Context:
 <pdf_content>
@@ -301,36 +328,19 @@ Retrieved Document Context:
             return
 
         chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
-        bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
         ollama_embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
-        if not os.path.exists(chroma_db_path) or not os.path.exists(bm25_index_path):
+        if not os.path.exists(chroma_db_path):
             self.is_loaded = False
             return
 
         # Initialize retrievers in-process for speed
         self.embeddings = OllamaEmbeddings(model=ollama_embed_model)
         self.vectorstore = Chroma(persist_directory=chroma_db_path, embedding_function=self.embeddings)
-        self.vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        # We will build loaders and retrievers dynamically per-session.
+        pass
 
-        with open(bm25_index_path, "rb") as f:
-            bm25_data = pickle.load(f)
-
-        if isinstance(bm25_data, dict) and "global" in bm25_data:
-            self.bm25_retriever = bm25_data["global"]
-            self.bm25_retrievers = bm25_data.get("documents", {})
-        else:
-            self.bm25_retriever = bm25_data
-            self.bm25_retrievers = {}
-
-        self.bm25_retriever.k = 3
-        for r in self.bm25_retrievers.values():
-            r.k = 3
-
-        self.ensemble_retriever = EnsembleRetriever(
-            retrievers=[self.bm25_retriever, self.vector_retriever],
-            weights=[0.5, 0.5]
-        )
+        # Done loading embedding model and vectorstore database.
         
         if HAS_CROSS_ENCODER:
             try:
@@ -351,7 +361,16 @@ Retrieved Document Context:
         history_msgs = load_history_from_db(session_id)
 
         # Determine route using Router Agent
-        available_docs = list(self.bm25_retrievers.keys()) if hasattr(self, 'bm25_retrievers') else []
+        available_docs = []
+        session_chunks = None
+        if self.is_loaded and self.vectorstore is not None:
+            try:
+                session_chunks = self.vectorstore.get(where={"session_id": session_id}, include=["documents", "metadatas"])
+                if session_chunks and "metadatas" in session_chunks:
+                    available_docs = list(set([m.get("doc_id") for m in session_chunks["metadatas"] if m.get("doc_id")]))
+            except Exception as e:
+                print(f"[RAG ENGINE] Error fetching session chunks: {e}")
+
         if not self.is_loaded or not available_docs:
             route = "general"
             target_doc = None
@@ -425,21 +444,42 @@ Retrieved Document Context:
             # ── Normal RAG Retrieval & Prompting (Single or Multi Document) ──
             total_start = time.perf_counter()
 
-            # Setup retrievers based on routing
-            if route == "single" and target_doc in self.bm25_retrievers:
-                vector_retriever = self.vectorstore.as_retriever(
-                    search_kwargs={"k": 3, "filter": {"doc_id": target_doc}}
-                )
-                bm25_retriever = self.bm25_retrievers[target_doc]
-                ensemble_retriever = EnsembleRetriever(
-                    retrievers=[bm25_retriever, vector_retriever],
-                    weights=[0.5, 0.5]
-                )
+            # Setup retrievers dynamically based on session_id and routing
+            if session_chunks and "documents" in session_chunks:
+                if route == "single":
+                    v_filter = {"$and": [{"doc_id": target_doc}, {"session_id": session_id}]}
+                    filtered_docs = [
+                        Document(page_content=doc_text, metadata=meta)
+                        for doc_text, meta in zip(session_chunks["documents"], session_chunks["metadatas"])
+                        if meta.get("doc_id") == target_doc
+                    ]
+                else:
+                    v_filter = {"session_id": session_id}
+                    filtered_docs = [
+                        Document(page_content=doc_text, metadata=meta)
+                        for doc_text, meta in zip(session_chunks["documents"], session_chunks["metadatas"])
+                    ]
             else:
-                # Default to global multi-doc retrieval
-                vector_retriever = self.vector_retriever
-                bm25_retriever = self.bm25_retriever
-                ensemble_retriever = self.ensemble_retriever
+                filtered_docs = []
+                v_filter = {"session_id": session_id}
+
+            if not filtered_docs:
+                vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 1, "filter": {"session_id": "non_existent"}})
+                bm25_retriever = BM25Retriever.from_documents([Document(page_content="No documents available.", metadata={"doc_id": "none"})])
+                bm25_retriever.k = 1
+            else:
+                max_k = 10 if model_profile == "flow" else 3
+                k_val = min(max_k, len(filtered_docs))
+                vector_retriever = self.vectorstore.as_retriever(
+                    search_kwargs={"k": k_val, "filter": v_filter}
+                )
+                bm25_retriever = BM25Retriever.from_documents(filtered_docs)
+                bm25_retriever.k = k_val
+
+            ensemble_retriever = EnsembleRetriever(
+                retrievers=[bm25_retriever, vector_retriever],
+                weights=[0.5, 0.5]
+            )
 
             # 1. Benchmark Chroma Only
             t_chroma_start = time.perf_counter()
@@ -617,61 +657,14 @@ Retrieved Document Context:
             print(f"[QUERY ROUTER] Routing error: {e}")
             return "multi", None
 
-    def delete_document(self, doc_id: str):
+    def delete_document(self, doc_id: str, session_id: str = "default"):
         self.load()
-        chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
-        bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
-        
-        # 1. Delete from ChromaDB
         if self.vectorstore is not None:
             try:
-                self.vectorstore.delete(where={"doc_id": doc_id})
-                print(f"[RAG ENGINE] Deleted doc_id '{doc_id}' from vectorstore.")
+                self.vectorstore.delete(where={"$and": [{"doc_id": doc_id}, {"session_id": session_id}]})
+                print(f"[RAG ENGINE] Deleted doc_id '{doc_id}' in session '{session_id}' from vectorstore.")
             except Exception as e:
-                print(f"[RAG ENGINE] Error deleting '{doc_id}' from vectorstore: {e}")
-        
-        # 2. Delete from BM25 retrievers dict
-        if hasattr(self, 'bm25_retrievers') and doc_id in self.bm25_retrievers:
-            del self.bm25_retrievers[doc_id]
-            print(f"[RAG ENGINE] Deleted doc_id '{doc_id}' from BM25 retrievers dictionary.")
-            
-        # 3. Rebuild global BM25 retriever
-        if self.vectorstore is not None:
-            all_data = self.vectorstore.get(include=["documents", "metadatas"])
-            all_docs = []
-            docs_by_id = {}
-            
-            for doc_text, meta in zip(all_data["documents"], all_data["metadatas"]):
-                doc = Document(page_content=doc_text, metadata=meta)
-                all_docs.append(doc)
-                d_id = meta.get("doc_id", "unknown")
-                if d_id not in docs_by_id:
-                    docs_by_id[d_id] = []
-                docs_by_id[d_id].append(doc)
-                
-            if all_docs:
-                self.bm25_retriever = BM25Retriever.from_documents(all_docs)
-                self.bm25_retriever.k = 3
-                for r in self.bm25_retrievers.values():
-                    r.k = 3
-                    
-                self.ensemble_retriever = EnsembleRetriever(
-                    retrievers=[self.bm25_retriever, self.vector_retriever],
-                    weights=[0.5, 0.5]
-                )
-                
-                # Update pickled index
-                bm25_data = {
-                    "global": self.bm25_retriever,
-                    "documents": self.bm25_retrievers
-                }
-                with open(bm25_index_path, "wb") as f:
-                    pickle.dump(bm25_data, f)
-                print(f"[RAG ENGINE] Rebuilt and saved BM25 index.")
-            else:
-                # No documents left, reset everything
-                print("[RAG ENGINE] No documents left in store. Resetting RAG engine.")
-                self.reset()
+                print(f"[RAG ENGINE] Error deleting '{doc_id}' in session '{session_id}' from vectorstore: {e}")
 
     def generate_chat_title(self, query_text: str, reply_text: str) -> str:
         self.load()

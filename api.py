@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -75,7 +75,11 @@ async def login(credentials: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
+async def upload_file(
+    file: UploadFile = File(...), 
+    session_id: str = Form("default"),
+    current_user: str = Depends(get_current_user)
+):
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -93,8 +97,10 @@ async def upload_file(file: UploadFile = File(...), current_user: str = Depends(
         # write to chroma_db without hitting Windows file lock errors.
         rag_engine.unload()
 
+        backend_session_id = f"{current_user}:{session_id}"
+
         result = subprocess.run(
-            [sys.executable, "ingest.py", file_path], 
+            [sys.executable, "ingest.py", file_path, "--session-id", backend_session_id], 
             capture_output=True, text=True,
             env=dict(os.environ, PYTHONIOENCODING="utf-8")
         )
@@ -114,6 +120,7 @@ async def upload_file(file: UploadFile = File(...), current_user: str = Depends(
 
 class DeleteDocumentRequest(BaseModel):
     doc_id: str
+    session_id: str = "default"
 
 @app.post("/query")
 async def query_document(request: QueryRequest, current_user: str = Depends(get_current_user)):
@@ -145,23 +152,42 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 @app.post("/reset")
-async def reset_rag(current_user: str = Depends(get_current_user)):
+async def reset_rag(
+    session_id: str = "default",
+    current_user: str = Depends(get_current_user)
+):
     try:
-        rag_engine.reset()
-        # Clear user history from persistent database
-        rag_engine.clear_user_history(current_user)
-        return {"message": "RAG engine index and chat history reset successfully."}
+        backend_session_id = f"{current_user}:{session_id}"
+        # Delete only documents belonging to this session
+        if rag_engine.vectorstore is not None:
+            try:
+                rag_engine.vectorstore.delete(where={"session_id": backend_session_id})
+                print(f"[RAG ENGINE] Deleted documents for session {backend_session_id} from vectorstore.")
+            except Exception as e:
+                print(f"[RAG ENGINE] Error deleting documents for session {backend_session_id}: {e}")
+        # Clear chat history for this session only
+        rag_engine.clear_session_history(backend_session_id)
+        return {"message": "RAG engine index and chat history for this session reset successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
 
 @app.get("/documents")
-async def list_documents(current_user: str = Depends(get_current_user)):
+async def list_documents(
+    session_id: str = "default",
+    current_user: str = Depends(get_current_user)
+):
     try:
+        backend_session_id = f"{current_user}:{session_id}"
         if not rag_engine.is_loaded:
             rag_engine.load()
         if not rag_engine.is_loaded:
             return {"documents": []}
-        docs = list(rag_engine.bm25_retrievers.keys()) if hasattr(rag_engine, 'bm25_retrievers') else []
+            
+        docs = []
+        if rag_engine.vectorstore is not None:
+            session_chunks = rag_engine.vectorstore.get(where={"session_id": backend_session_id}, include=["metadatas"])
+            if session_chunks and "metadatas" in session_chunks:
+                docs = list(set([m.get("doc_id") for m in session_chunks["metadatas"] if m.get("doc_id")]))
         return {"documents": docs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -169,8 +195,9 @@ async def list_documents(current_user: str = Depends(get_current_user)):
 @app.post("/documents/delete")
 async def delete_document(request: DeleteDocumentRequest, current_user: str = Depends(get_current_user)):
     try:
-        rag_engine.delete_document(request.doc_id)
-        return {"message": f"Document '{request.doc_id}' deleted successfully."}
+        backend_session_id = f"{current_user}:{request.session_id}"
+        rag_engine.delete_document(request.doc_id, backend_session_id)
+        return {"message": f"Document '{request.doc_id}' deleted successfully from chat session."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 

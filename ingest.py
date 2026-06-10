@@ -34,9 +34,9 @@ def sanitise_text(text: str) -> str:
     sanitised = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", sanitised)
     return sanitised
 
-def ingest_document(file_path):
+def ingest_document(file_path, session_id="default"):
     ext = os.path.splitext(file_path)[1].lower()
-    print(f"Loading document: {file_path} (type: {ext})...")
+    print(f"Loading document: {file_path} (type: {ext}) in session {session_id}...")
     
     from langchain_core.documents import Document
     docs = []
@@ -181,8 +181,9 @@ def ingest_document(file_path):
     doc_id = os.path.basename(file_path)
     for d in docs:
         d.metadata["doc_id"] = doc_id
+        d.metadata["session_id"] = session_id
         
-    print(f"Loaded {len(docs)} document section(s) for doc_id: {doc_id}.")
+    print(f"Loaded {len(docs)} document section(s) for doc_id: {doc_id} in session {session_id}.")
     
     print("Splitting text into chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
@@ -196,11 +197,11 @@ def ingest_document(file_path):
     splits = [s for s in splits if s.page_content.strip()]
     for s in splits:
         s.metadata["doc_id"] = doc_id
+        s.metadata["session_id"] = session_id
     print(f"Created {len(splits)} chunks.")
 
     print("Generating Vector Embeddings and saving to Chroma in batches...")
     chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_db")
-    bm25_index_path = os.getenv("BM25_INDEX_PATH", "bm25_index.pkl")
     ollama_embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
     embeddings = OllamaEmbeddings(model=ollama_embed_model)
@@ -208,9 +209,9 @@ def ingest_document(file_path):
     # Use existing Chroma database, clear old version of this document if it exists, and append new chunks.
     vectorstore = Chroma(persist_directory=chroma_db_path, embedding_function=embeddings)
     try:
-        print(f"Checking for existing index entries for {doc_id} to prevent duplication...")
-        vectorstore.delete(where={"doc_id": doc_id})
-        print(f"Cleared existing chunks for {doc_id}.")
+        print(f"Checking for existing index entries for {doc_id} in session {session_id} to prevent duplication...")
+        vectorstore.delete(where={"$and": [{"doc_id": doc_id}, {"session_id": session_id}]})
+        print(f"Cleared existing chunks for {doc_id} in session {session_id}.")
     except Exception as e:
         print(f"No previous index entry to clean or collection is empty: {e}")
     
@@ -221,46 +222,17 @@ def ingest_document(file_path):
         vectorstore.add_documents(documents=batch)
         
     print(f"Vectors saved to {chroma_db_path}")
-
-    print("Generating Multi-Doc BM25 Indices...")
-    # Retrieve all documents currently in the collection to build global and per-doc BM25 indexes
-    all_data = vectorstore.get(include=["documents", "metadatas"])
-    all_docs = []
-    docs_by_id = {}
-    
-    for doc_text, meta in zip(all_data["documents"], all_data["metadatas"]):
-        doc = Document(page_content=doc_text, metadata=meta)
-        all_docs.append(doc)
-        d_id = meta.get("doc_id", "unknown")
-        if d_id not in docs_by_id:
-            docs_by_id[d_id] = []
-        docs_by_id[d_id].append(doc)
-        
-    if all_docs:
-        bm25_data = {
-            "global": BM25Retriever.from_documents(all_docs),
-            "documents": {}
-        }
-        for d_id, doc_splits in docs_by_id.items():
-            bm25_data["documents"][d_id] = BM25Retriever.from_documents(doc_splits)
-            
-        with open(bm25_index_path, "wb") as f:
-            pickle.dump(bm25_data, f)
-        print(f"BM25 indices saved to {bm25_index_path} ({len(docs_by_id)} documents indexed)")
-    else:
-        print("No documents found in store, skipping BM25 indexing.")
-
     print("Ingestion complete!")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python ingest.py <path_to_file>")
-        print("Supported formats: .pdf, .docx, .doc, .csv, .xlsx, .md, .txt, .png, .jpg, .jpeg")
+    import argparse
+    parser = argparse.ArgumentParser(description="Ingest document into RAG database")
+    parser.add_argument("file_path", help="Path to the file to ingest")
+    parser.add_argument("--session-id", default="default", help="Private session ID for chat-level isolation")
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.file_path):
+        print(f"Error: File {args.file_path} does not exist.")
         sys.exit(1)
         
-    file_path = sys.argv[1]
-    if not os.path.exists(file_path):
-        print(f"Error: File {file_path} does not exist.")
-        sys.exit(1)
-        
-    ingest_document(file_path)
+    ingest_document(args.file_path, session_id=args.session_id)

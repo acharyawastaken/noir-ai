@@ -83,63 +83,287 @@ function TypingIndicator() {
   );
 }
 
-// ── Mermaid Diagram Renderer Component ──
-function MermaidDiagram({ chartCode }) {
-  var containerRef = useRef(null);
-  var [svg, setSvg] = useState("");
-  var [error, setError] = useState(null);
-
-  useEffect(function () {
-    if (!chartCode || !window.mermaid) return;
-    
-    var chartId = "mermaid-" + Math.random().toString(36).substring(2, 9);
-    
-    try {
-      var cleanCode = chartCode.trim();
-      // Strip markdown code fences if present
-      if (cleanCode.includes("```mermaid")) {
-        var parts = cleanCode.split("```mermaid");
-        if (parts.length > 1) {
-          cleanCode = parts[1].split("```")[0].trim();
-        }
-      } else if (cleanCode.startsWith("```")) {
-        cleanCode = cleanCode.replace(/^```[a-zA-Z]*\n/, "").replace(/\n```$/, "");
+// ── SVG Flowchart Component ──
+// Safely parses step structure (JSON/markdown lists) and draws a premium SVG vertical diagram
+function SVGFlowchart({ data }) {
+  var parsed = null;
+  var rawText = typeof data === "string" ? data : JSON.stringify(data);
+  
+  try {
+    if (typeof data === "string") {
+      // Find JSON block first
+      var startIdx = data.indexOf("{");
+      var endIdx = data.lastIndexOf("}");
+      if (startIdx !== -1 && endIdx !== -1) {
+        parsed = JSON.parse(data.substring(startIdx, endIdx + 1));
+      } else {
+        parsed = JSON.parse(data);
       }
-
-      window.mermaid.render(chartId, cleanCode)
-        .then(function (result) {
-          setSvg(result.svg);
-          setError(null);
-        })
-        .catch(function (err) {
-          console.error("Mermaid render error:", err);
-          setError("Flowchart syntax error in generated model output.");
-        });
-    } catch (e) {
-      console.error(e);
-      setError("Failed to parse flowchart.");
+    } else {
+      parsed = data;
     }
-  }, [chartCode]);
+  } catch (e) {
+    console.error("Error parsing flowchart JSON, attempting list extraction:", e);
+  }
 
-  if (error) {
+  // Fallback: If not valid JSON or steps missing, extract steps from the text lines
+  if (!parsed || !parsed.steps || !Array.isArray(parsed.steps)) {
+    var lines = rawText.split("\n");
+    var extractedSteps = [];
+    var stepNum = 1;
+    lines.forEach(function (line) {
+      var clean = line.trim().replace(/^[\*\-\d\.\s\:]+/, "").replace(/^[\[\]`"']+|[\[\]`"']+$/g, "").trim();
+      // Ignore JSON characters or empty lines
+      if (clean && clean.length > 5 && !clean.startsWith("{") && !clean.startsWith("}") && !clean.startsWith("[") && !clean.startsWith("]") && !clean.includes('":')) {
+        extractedSteps.push({
+          id: stepNum,
+          title: "Step " + stepNum,
+          description: clean,
+          type: stepNum === 1 ? "start" : "process"
+        });
+        stepNum++;
+      }
+    });
+    
+    if (extractedSteps.length > 0) {
+      if (extractedSteps.length > 1) {
+        extractedSteps[extractedSteps.length - 1].type = "end";
+      }
+      parsed = {
+        title: "Workflow Analysis",
+        steps: extractedSteps
+      };
+    }
+  }
+
+  if (!parsed || !parsed.steps || parsed.steps.length === 0) {
     return (
-      <div className="mermaid-error" style={{ color: "#ef4444", fontSize: "10px", padding: "8px", border: "1px dashed rgba(239, 68, 68, 0.2)", borderRadius: "4px", marginTop: "10px" }}>
-        <Icon name="alert-triangle" size={12} style={{ marginRight: "6px" }} />
-        {error}
+      <div style={{ color: "var(--text-tertiary)", fontSize: "11px", padding: "10px", border: "1px dashed var(--border-subtle)", borderRadius: "6px", marginTop: "10px" }}>
+        <Icon name="info" size={12} style={{ marginRight: "6px" }} />
+        No process steps could be extracted for flowchart rendering.
       </div>
     );
   }
 
-  if (!svg) {
-    return <div style={{ fontSize: "10px", color: "var(--text-tertiary)", marginTop: "10px" }}>Compiling diagram SVG...</div>;
-  }
+  var steps = parsed.steps;
+  var title = parsed.title || "Flowchart";
+  
+  // Layout parameters for vertical flowchart
+  var cardWidth = 280;
+  var cardHeight = 90;
+  var verticalGap = 45;
+  var padding = 20;
+  
+  var svgWidth = cardWidth + padding * 2;
+  var svgHeight = steps.length * (cardHeight + verticalGap) - verticalGap + padding * 2;
+  
+  var elements = [];
+
+  // 1. Draw connections
+  steps.forEach(function (step, index) {
+    if (index < steps.length - 1) {
+      var fromStep = step;
+      var toStep = steps[index + 1];
+      
+      var x1 = svgWidth / 2;
+      var y1 = padding + index * (cardHeight + verticalGap) + cardHeight;
+      var x2 = svgWidth / 2;
+      var y2 = padding + (index + 1) * (cardHeight + verticalGap);
+      
+      elements.push(
+        <line
+          key={"line-" + index}
+          x1={x1}
+          y1={y1}
+          x2={x2}
+          y2={y2 - 6} // Stop slightly before the box to avoid arrowhead overlap
+          stroke="rgba(59, 130, 246, 0.45)"
+          strokeWidth={2}
+          markerEnd="url(#arrowhead)"
+        />
+      );
+
+      // Label decision branch if present
+      var nextConn = (parsed.connections || []).find(function(c) { 
+        return c.from == fromStep.id && c.to == toStep.id; 
+      });
+      var label = nextConn ? nextConn.label : (fromStep.type === "decision" ? "Next" : null);
+      if (label) {
+        elements.push(
+          <g key={"label-group-" + index}>
+            <rect
+              x={x1 - 18}
+              y={(y1 + y2) / 2 - 8}
+              width={36}
+              height={16}
+              rx={4}
+              fill="rgba(15, 23, 42, 0.95)"
+              stroke="rgba(255, 255, 255, 0.05)"
+              strokeWidth={1}
+            />
+            <text
+              x={x1}
+              y={(y1 + y2) / 2 + 1}
+              fill="#94a3b8"
+              fontSize={9}
+              fontWeight="bold"
+              textAnchor="middle"
+              alignmentBaseline="middle"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      }
+    }
+  });
+
+  // 2. Draw Cards
+  steps.forEach(function (step, index) {
+    var x = (svgWidth - cardWidth) / 2;
+    var y = padding + index * (cardHeight + verticalGap);
+    
+    var rx = 12;
+    var ry = 12;
+    var badgeBg = "rgba(59, 130, 246, 0.15)";
+    var badgeBorder = "rgba(59, 130, 246, 0.25)";
+    var badgeColor = "#60a5fa";
+    
+    if (step.type === "start" || step.type === "end") {
+      rx = 20;
+      ry = 20;
+      badgeBg = "rgba(16, 185, 129, 0.15)";
+      badgeBorder = "rgba(16, 185, 129, 0.25)";
+      badgeColor = "#34d399";
+    } else if (step.type === "decision") {
+      rx = 8;
+      ry = 8;
+      badgeBg = "rgba(245, 158, 11, 0.15)";
+      badgeBorder = "rgba(245, 158, 11, 0.25)";
+      badgeColor = "#fbbf24";
+    }
+
+    elements.push(
+      <g key={"step-" + index} className="flowchart-node">
+        {/* Glow effect */}
+        <rect
+          x={x - 2}
+          y={y - 2}
+          width={cardWidth + 4}
+          height={cardHeight + 4}
+          rx={rx + 2}
+          ry={ry + 2}
+          fill="transparent"
+          stroke={badgeColor + "15"}
+          strokeWidth={3}
+          style={{ pointerEvents: "none" }}
+        />
+        {/* Card Body */}
+        <rect
+          x={x}
+          y={y}
+          width={cardWidth}
+          height={cardHeight}
+          rx={rx}
+          ry={ry}
+          fill="rgba(15, 23, 42, 0.75)"
+          stroke="rgba(255, 255, 255, 0.08)"
+          strokeWidth={1.2}
+          style={{ backdropFilter: "blur(10px)" }}
+        />
+        {/* Type Badge */}
+        <rect
+          x={x + 12}
+          y={y + 12}
+          width={45}
+          height={16}
+          rx={8}
+          fill={badgeBg}
+          stroke={badgeBorder}
+          strokeWidth={1}
+        />
+        <text
+          x={x + 34.5}
+          y={y + 21}
+          fill={badgeColor}
+          fontSize={8}
+          fontWeight="700"
+          textAnchor="middle"
+          alignmentBaseline="middle"
+          style={{ letterSpacing: "0.5px", textTransform: "uppercase" }}
+        >
+          {step.type || "process"}
+        </text>
+        {/* Title */}
+        <text
+          x={x + 65}
+          y={y + 24}
+          fill="#f8fafc"
+          fontSize={11.5}
+          fontWeight="600"
+          fontFamily="inherit"
+        >
+          {step.title}
+        </text>
+        {/* Description HTML */}
+        <foreignObject
+          x={x + 12}
+          y={y + 36}
+          width={cardWidth - 24}
+          height={cardHeight - 44}
+        >
+          <div
+            style={{
+              color: "#94a3b8",
+              fontSize: "10.5px",
+              lineHeight: "1.35",
+              fontFamily: "inherit",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              display: "-webkit-box",
+              WebkitLineClamp: "3",
+              WebkitBoxOrient: "vertical"
+            }}
+          >
+            {step.description}
+          </div>
+        </foreignObject>
+      </g>
+    );
+  });
 
   return (
-    <div 
-      className="mermaid-diagram-container" 
-      dangerouslySetInnerHTML={{ __html: svg }} 
-      style={{ overflowX: "auto", padding: "10px", background: "rgba(255,255,255,0.015)", borderRadius: "6px", border: "1px solid var(--border-subtle)", marginTop: "10px" }}
-    />
+    <div className="flowchart-svg-container my-3 p-4 rounded-xl border border-slate-800 bg-slate-950/20 flex flex-col items-center w-full">
+      <div className="text-slate-300 text-xs font-bold mb-3 flex items-center gap-2">
+        <Icon name="git-branch" size={12} />
+        {title}
+      </div>
+      <div className="w-full overflow-x-auto flex justify-center py-2">
+        <svg
+          width={svgWidth}
+          height={svgHeight}
+          viewBox={"0 0 " + svgWidth + " " + svgHeight}
+          style={{ overflow: "visible" }}
+        >
+          <defs>
+            <marker
+              id="arrowhead"
+              markerWidth="8"
+              markerHeight="6"
+              refX="6"
+              refY="3"
+              orient="auto"
+            >
+              <polygon
+                points="0 0, 8 3, 0 6"
+                fill="rgba(59, 130, 246, 0.6)"
+              />
+            </marker>
+          </defs>
+          {elements}
+        </svg>
+      </div>
+    </div>
   );
 }
 
@@ -170,15 +394,21 @@ function MessageBubble({ msg, isLatest }) {
             <span style={{ marginLeft: "4px" }}>{routeLabel.text}</span>
           </div>
         )}
-        <div style={{ whiteSpace: "pre-wrap" }}>
-          {msg.role === "assistant" && isLatest ? (
-            <TypewriterText text={msg.text} speed={32} />
-          ) : (
-            msg.text
-          )}
-        </div>
-        {msg.role === "assistant" && (msg.route === "flow" || msg.text?.includes("```mermaid")) && (
-          <MermaidDiagram chartCode={msg.text} />
+        {msg.role === "assistant" && msg.route === "flow" ? (
+          <div style={{ color: "var(--text-secondary)", fontSize: "12px", marginBottom: "8px" }}>
+            {isLatest ? "Processing document workflow..." : "Here is the flowchart overview of the document:"}
+          </div>
+        ) : (
+          <div style={{ whiteSpace: "pre-wrap" }}>
+            {msg.role === "assistant" && isLatest ? (
+              <TypewriterText text={msg.text} speed={32} />
+            ) : (
+              msg.text
+            )}
+          </div>
+        )}
+        {msg.role === "assistant" && msg.route === "flow" && (
+          <SVGFlowchart data={msg.text} />
         )}
         {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
           <div className="msg-sources">
@@ -378,8 +608,8 @@ function App() {
   var [documents, setDocuments] = useState([]);
 
   function fetchDocuments() {
-    if (!token) return;
-    fetch("/documents", {
+    if (!token || !activeChatId) return;
+    fetch("/documents?session_id=" + encodeURIComponent(activeChatId), {
       headers: { "Authorization": "Bearer " + token }
     })
       .then(function (res) {
@@ -395,16 +625,16 @@ function App() {
       });
   }
 
-  // Fetch documents on mount / login
+  // Fetch documents on mount / login / chat change
   useEffect(function () {
     fetchDocuments();
-  }, [token]);
+  }, [token, activeChatId]);
 
   function handleResetIndex() {
-    if (!token) return;
-    if (!confirm("Are you sure you want to delete all indexed documents? This cannot be undone.")) return;
+    if (!token || !activeChatId) return;
+    if (!confirm("Are you sure you want to delete all indexed documents in this chat? This cannot be undone.")) return;
     
-    fetch("/reset", {
+    fetch("/reset?session_id=" + encodeURIComponent(activeChatId), {
       method: "POST",
       headers: { "Authorization": "Bearer " + token }
     })
@@ -422,7 +652,7 @@ function App() {
   }
 
   function handleDeleteDocument(docId) {
-    if (!token) return;
+    if (!token || !activeChatId) return;
     if (!confirm("Are you sure you want to delete document \"" + docId + "\"?")) return;
     
     fetch("/documents/delete", {
@@ -431,7 +661,7 @@ function App() {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + token
       },
-      body: JSON.stringify({ doc_id: docId })
+      body: JSON.stringify({ doc_id: docId, session_id: activeChatId })
     })
       .then(function (res) {
         if (res.ok) {
@@ -521,6 +751,7 @@ function App() {
 
     var formData = new FormData();
     formData.append("file", f);
+    formData.append("session_id", activeChatId);
 
     fetch("/upload", {
       method: "POST",
