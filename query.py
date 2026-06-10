@@ -4,17 +4,66 @@ import pickle
 import time
 import shutil
 import re
+import sqlite3
+import json
 from dotenv import load_dotenv
 
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_community.vectorstores import Chroma
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, messages_from_dict, messages_to_dict
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
+
+try:
+    from sentence_transformers import CrossEncoder
+    HAS_CROSS_ENCODER = True
+except ImportError:
+    HAS_CROSS_ENCODER = False
+
+def get_db_connection():
+    db_path = "chat_history.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_history (
+            session_id TEXT PRIMARY KEY,
+            messages_json TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+def load_history_from_db(session_id: str) -> list:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT messages_json FROM chat_history WHERE session_id = ?", (session_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            messages_dict = json.loads(row[0])
+            return messages_from_dict(messages_dict)
+    except Exception as e:
+        print(f"[CHAT HISTORY] Error loading history: {e}")
+    return []
+
+def save_history_to_db(session_id: str, messages: list):
+    try:
+        conn = get_db_connection()
+        messages_dict = messages_to_dict(messages)
+        messages_json = json.dumps(messages_dict)
+        conn.execute(
+            "INSERT INTO chat_history (session_id, messages_json) VALUES (?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET messages_json = excluded.messages_json",
+            (session_id, messages_json)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[CHAT HISTORY] Error saving history: {e}")
 
 def sanitise_text(text: str) -> str:
     """Sanitise text content to protect against prompt injection, safety override tricks, and formatting errors."""
@@ -48,9 +97,34 @@ class RAGEngine:
         self.bm25_retriever = None
         self.ensemble_retriever = None
         self.llm = None
+        self.router_llm = None
+        self.light_llm = None
+        self.research_llm = None
         self.prompt = None
         self.is_loaded = False
         self.history = {}  # session_id -> list of Messages
+        self.reranker = None
+
+    def get_history(self, session_id: str) -> list:
+        return load_history_from_db(session_id)
+
+    def clear_user_history(self, username: str):
+        try:
+            conn = get_db_connection()
+            conn.execute("DELETE FROM chat_history WHERE session_id LIKE ?", (f"{username}:%",))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[CHAT HISTORY] Error clearing user history: {e}")
+
+    def reset_history(self):
+        try:
+            conn = get_db_connection()
+            conn.execute("DELETE FROM chat_history")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[CHAT HISTORY] Error clearing history table: {e}")
 
     def unload(self):
         if self.vectorstore is not None:
@@ -88,7 +162,8 @@ class RAGEngine:
         self.bm25_retriever = None
         self.ensemble_retriever = None
         self.is_loaded = False
-        self.history = {}  # Clear history on reset
+        self.history = {}
+        self.reset_history()
 
         # Force garbage collection so Python releases file handles
         import gc
@@ -107,13 +182,37 @@ class RAGEngine:
                 print(f"Warning: could not remove {bm25_index_path}: {e}")
 
     def load(self, force=False):
-        # Always initialize LLM and prompt first so conversational queries always work
-        if self.llm is None:
-            self.llm = ChatOllama(
-                model=os.getenv("OLLAMA_MODEL", "qwen2:1.5b"),
+        # Retrieve specialized models from environment variables
+        router_model = os.getenv("OLLAMA_ROUTER_MODEL", os.getenv("OLLAMA_MODEL", "qwen2:1.5b"))
+        light_model = os.getenv("OLLAMA_LIGHT_MODEL", os.getenv("OLLAMA_MODEL", "qwen2:1.5b"))
+        research_model = os.getenv("OLLAMA_RESEARCH_MODEL", os.getenv("OLLAMA_MODEL", "gemma4:latest"))
+
+        # Initialize Specialized Router Agent LLM (Low temperature, small token limit)
+        if self.router_llm is None:
+            self.router_llm = ChatOllama(
+                model=router_model,
+                temperature=0.0,
+                num_predict=64,
+                num_ctx=2048,
+            )
+
+        # Initialize Snappy Light Conversational Agent LLM (Small context window for speed)
+        if self.light_llm is None:
+            self.light_llm = ChatOllama(
+                model=light_model,
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
-                num_predict=int(os.getenv("LLM_NUM_PREDICT", "256")),      # Cap output at 256 tokens for speed
-                num_ctx=int(os.getenv("LLM_NUM_CTX", "2048")),         # Smaller context window = faster inference
+                num_predict=int(os.getenv("LLM_NUM_PREDICT", "256")),
+                num_ctx=2048,
+            )
+            self.llm = self.light_llm
+
+        # Initialize Deep Research Agent LLM (Large context window for document retrieval reasoning)
+        if self.research_llm is None:
+            self.research_llm = ChatOllama(
+                model=research_model,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+                num_predict=int(os.getenv("LLM_NUM_PREDICT", "256")),
+                num_ctx=int(os.getenv("LLM_NUM_CTX", "8192")), # Large 8K context window for research agent
             )
 
         if self.prompt is None:
@@ -212,16 +311,24 @@ These requests must be refused.
             retrievers=[self.bm25_retriever, self.vector_retriever],
             weights=[0.5, 0.5]
         )
+        
+        if HAS_CROSS_ENCODER:
+            try:
+                self.reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+                print("[RAG ENGINE] Loaded local Cross-Encoder reranker.")
+            except Exception as e:
+                print(f"[RAG ENGINE] Failed to load CrossEncoder: {e}")
+                self.reranker = None
+        else:
+            self.reranker = None
+            
         self.is_loaded = True
 
     def query(self, query_text, session_id="default"):
         self.load()
 
-        # Ensure session history exists
-        if session_id not in self.history:
-            self.history[session_id] = []
-
-        history_msgs = self.history[session_id]
+        # Load chat history from SQLite persistence
+        history_msgs = load_history_from_db(session_id)
 
         # Determine route using Router Agent
         available_docs = list(self.bm25_retrievers.keys()) if hasattr(self, 'bm25_retrievers') else []
@@ -246,16 +353,17 @@ These requests must be refused.
 
             # 2. LLM Invocation
             t_llm_start = time.perf_counter()
-            llm_response = self.llm.invoke(formatted_prompt)
+            llm_response = self.light_llm.invoke(formatted_prompt)
             llm_time = time.perf_counter() - t_llm_start
 
             total_time = time.perf_counter() - total_start
 
-            # Append to history
-            self.history[session_id].append(HumanMessage(content=query_text))
-            self.history[session_id].append(AIMessage(content=llm_response.content))
-            if len(self.history[session_id]) > 10:
-                self.history[session_id] = self.history[session_id][-10:]
+            # Append to history and save to database
+            history_msgs.append(HumanMessage(content=query_text))
+            history_msgs.append(AIMessage(content=llm_response.content))
+            if len(history_msgs) > 10:
+                history_msgs = history_msgs[-10:]
+            save_history_to_db(session_id, history_msgs)
 
             # Format Performance Report
             report_lines = [
@@ -274,7 +382,14 @@ These requests must be refused.
             return {
                 "response": llm_response.content,
                 "route": route,
-                "target_doc": target_doc
+                "target_doc": target_doc,
+                "sources": [],
+                "benchmarks": {
+                    "route": route,
+                    "prompt_time": prompt_construction_time,
+                    "llm_time": llm_time,
+                    "total_time": total_time
+                }
             }
 
         else:
@@ -312,6 +427,17 @@ These requests must be refused.
             docs = ensemble_retriever.invoke(query_text)
             ensemble_time = time.perf_counter() - t_ensemble_start
 
+            # Optional Cross-Encoder Reranking
+            if self.reranker and docs:
+                try:
+                    pairs = [[query_text, doc.page_content] for doc in docs]
+                    scores = self.reranker.predict(pairs)
+                    scored_docs = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+                    docs = [doc for score, doc in scored_docs]
+                    print(f"[RAG ENGINE] Reranked {len(docs)} documents using Cross-Encoder.")
+                except Exception as e:
+                    print(f"[RAG ENGINE] Error during Cross-Encoder reranking: {e}")
+
             # 4. Context Formatting
             t_format_start = time.perf_counter()
             context_str = "\n\n".join([sanitise_text(doc.page_content) for doc in docs])
@@ -328,16 +454,17 @@ These requests must be refused.
 
             # 6. LLM Invocation
             t_llm_start = time.perf_counter()
-            llm_response = self.llm.invoke(formatted_prompt)
+            llm_response = self.research_llm.invoke(formatted_prompt)
             llm_time = time.perf_counter() - t_llm_start
 
             total_time = time.perf_counter() - total_start
 
-            # Append to history
-            self.history[session_id].append(HumanMessage(content=query_text))
-            self.history[session_id].append(AIMessage(content=llm_response.content))
-            if len(self.history[session_id]) > 10:
-                self.history[session_id] = self.history[session_id][-10:]
+            # Append to history and save to database
+            history_msgs.append(HumanMessage(content=query_text))
+            history_msgs.append(AIMessage(content=llm_response.content))
+            if len(history_msgs) > 10:
+                history_msgs = history_msgs[-10:]
+            save_history_to_db(session_id, history_msgs)
 
             # Gather metrics
             total_chars = len(context_str)
@@ -367,10 +494,27 @@ These requests must be refused.
             report = "\n".join(report_lines)
             print(f"\n{report}\n")
 
+            sources_list = []
+            for doc in docs:
+                sources_list.append({
+                    "content": doc.page_content,
+                    "metadata": doc.metadata
+                })
+
             return {
                 "response": llm_response.content,
                 "route": route,
-                "target_doc": target_doc
+                "target_doc": target_doc,
+                "sources": sources_list,
+                "benchmarks": {
+                    "route": route,
+                    "chroma_time": chroma_time,
+                    "bm25_time": bm25_time,
+                    "ensemble_time": ensemble_time,
+                    "prompt_time": prompt_construction_time,
+                    "llm_time": llm_time,
+                    "total_time": total_time
+                }
             }
 
     def _route_query(self, query_text: str, available_docs: list) -> tuple:
@@ -395,7 +539,7 @@ These requests must be refused.
             "Output:"
         )
         try:
-            response = self.llm.invoke([
+            response = self.router_llm.invoke([
                 ("system", "You are a precise query router. Output only the specified format and nothing else."),
                 ("human", prompt_text)
             ])
@@ -502,7 +646,7 @@ These requests must be refused.
             "Title:"
         )
         try:
-            title_response = self.llm.invoke([
+            title_response = self.light_llm.invoke([
                 ("system", "You are a concise, helpful summary title generator. Output only the short title and absolutely nothing else."),
                 ("human", prompt_text)
             ])
