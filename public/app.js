@@ -115,6 +115,37 @@ function MessageBubble({ msg, isLatest }) {
             msg.text
           )}
         </div>
+        {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+          <div className="msg-sources">
+            <div className="msg-sources-title">
+              <Icon name="link-2" size={10} />
+              <span style={{ marginLeft: "4px" }}>Sources ({msg.sources.length})</span>
+            </div>
+            <div className="msg-sources-list">
+              {msg.sources.map(function(src, sIdx) {
+                var docName = src.metadata.doc_id || "Source Document";
+                var details = [];
+                if (src.metadata.page) details.push("Page " + src.metadata.page);
+                if (src.metadata.slide) details.push("Slide " + src.metadata.slide);
+                if (src.metadata.sheet) details.push("Sheet: " + src.metadata.sheet);
+                if (src.metadata.row !== undefined && src.metadata.row !== null) details.push("Row " + (src.metadata.row + 1));
+                var detailStr = details.length > 0 ? " — " + details.join(", ") : "";
+                
+                return (
+                  <div key={sIdx} className="msg-source-card" title={src.content}>
+                    <div className="msg-source-header">
+                      <Icon name="file-text" size={10} />
+                      <span className="msg-source-name">{docName}{detailStr}</span>
+                    </div>
+                    <div className="msg-source-snippet">
+                      {src.content.length > 120 ? src.content.substring(0, 120) + "..." : src.content}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
       {msg.role === "user" && (
         <div className="msg-avatar" style={{ background: "rgba(255,255,255,0.04)" }}>U</div>
@@ -482,10 +513,32 @@ function App() {
           role: "assistant",
           text: result.ok ? answer : "\u26A0 " + (result.data.detail || "Something went wrong."),
           route: result.ok ? result.data.route : null,
-          target_doc: result.ok ? result.data.target_doc : null
+          target_doc: result.ok ? result.data.target_doc : null,
+          sources: result.ok ? result.data.sources : [],
+          benchmarks: result.ok ? result.data.benchmarks : null
         };
         setLatestAssistantId(botId);
         appendMessageToActiveStore(botMsg);
+
+        if (result.ok && result.data.benchmarks) {
+          var b = result.data.benchmarks;
+          var lines = [
+            "==================================================",
+            "ROUTING: " + b.route.toUpperCase() + (result.data.target_doc ? " (" + result.data.target_doc + ")" : ""),
+            "=================================================="
+          ];
+          if (b.chroma_time !== undefined) lines.push("ChromaDB Retrieval:  " + b.chroma_time.toFixed(4) + "s");
+          if (b.bm25_time !== undefined) lines.push("BM25 Retrieval:      " + b.bm25_time.toFixed(4) + "s");
+          if (b.ensemble_time !== undefined) lines.push("Ensemble Retrieval:  " + b.ensemble_time.toFixed(4) + "s");
+          if (b.prompt_time !== undefined) lines.push("Prompt Construction: " + b.prompt_time.toFixed(4) + "s");
+          if (b.llm_time !== undefined) lines.push("LLM Inference:       " + b.llm_time.toFixed(4) + "s");
+          if (b.total_time !== undefined) lines.push("Total Execution:     " + b.total_time.toFixed(4) + "s");
+          lines.push("==================================================");
+          
+          updateActiveStore({
+            logText: lines.join("\n")
+          });
+        }
         
         // Auto-rename chat using dynamic generated title from description and reply
         if (result.ok && result.data.title) {
