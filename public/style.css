@@ -1232,3 +1232,82 @@ body {
   margin-bottom: 8px;
   width: fit-content;
 }
+
+/* ---- Sources & Citations UI ---- */
+.msg-sources {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  width: 100%;
+}
+
+.msg-sources-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+}
+
+.msg-sources-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.msg-source-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  transition: all var(--transition-fast);
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.msg-source-card:hover {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: var(--border-medium);
+  transform: translateY(-1px);
+}
+
+.msg-source-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.msg-source-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-source-card:hover .msg-source-name {
+  color: var(--text-primary);
+}
+
+.msg-source-snippet {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  text-overflow: ellipsis;
+}
+
+.msg-source-card:hover .msg-source-snippet {
+  color: var(--text-secondary);
+}
