@@ -121,7 +121,7 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
         backend_session_id = f"{current_user}:{request.session_id}"
         
         # Check if the chat history is empty for this session (meaning first turn)
-        is_first_turn = len(rag_engine.history.get(backend_session_id, [])) == 0
+        is_first_turn = len(rag_engine.get_history(backend_session_id)) == 0
         
         result = rag_engine.query(request.query, session_id=backend_session_id)
         response_text = result["response"]
@@ -136,7 +136,9 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
             "response": response_text,
             "title": title,
             "route": route,
-            "target_doc": target_doc
+            "target_doc": target_doc,
+            "sources": result.get("sources", []),
+            "benchmarks": result.get("benchmarks", {})
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -145,11 +147,8 @@ async def query_document(request: QueryRequest, current_user: str = Depends(get_
 async def reset_rag(current_user: str = Depends(get_current_user)):
     try:
         rag_engine.reset()
-        # Clear all history keys belonging to the current user
-        prefix = f"{current_user}:"
-        user_keys = [k for k in list(rag_engine.history.keys()) if k.startswith(prefix)]
-        for k in user_keys:
-            rag_engine.history.pop(k, None)
+        # Clear user history from persistent database
+        rag_engine.clear_user_history(current_user)
         return {"message": "RAG engine index and chat history reset successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
