@@ -14,4 +14,5 @@ pypdf
 docx2txt
 pyjwt
 python-pptx
+sentence-transformers
 
