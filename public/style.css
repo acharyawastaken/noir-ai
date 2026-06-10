@@ -1346,3 +1346,28 @@ body {
   background: #0B0E14; /* Match dark theme */
   color: var(--text-secondary);
 }
+
+/* ---- Mermaid Flowchart Diagram Styling ---- */
+.mermaid-diagram-container {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.mermaid-diagram-container::-webkit-scrollbar {
+  height: 6px;
+}
+
+.mermaid-diagram-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.mermaid-diagram-container svg {
+  min-width: 500px;
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}

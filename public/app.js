@@ -83,6 +83,66 @@ function TypingIndicator() {
   );
 }
 
+// ── Mermaid Diagram Renderer Component ──
+function MermaidDiagram({ chartCode }) {
+  var containerRef = useRef(null);
+  var [svg, setSvg] = useState("");
+  var [error, setError] = useState(null);
+
+  useEffect(function () {
+    if (!chartCode || !window.mermaid) return;
+    
+    var chartId = "mermaid-" + Math.random().toString(36).substring(2, 9);
+    
+    try {
+      var cleanCode = chartCode.trim();
+      // Strip markdown code fences if present
+      if (cleanCode.includes("```mermaid")) {
+        var parts = cleanCode.split("```mermaid");
+        if (parts.length > 1) {
+          cleanCode = parts[1].split("```")[0].trim();
+        }
+      } else if (cleanCode.startsWith("```")) {
+        cleanCode = cleanCode.replace(/^```[a-zA-Z]*\n/, "").replace(/\n```$/, "");
+      }
+
+      window.mermaid.render(chartId, cleanCode)
+        .then(function (result) {
+          setSvg(result.svg);
+          setError(null);
+        })
+        .catch(function (err) {
+          console.error("Mermaid render error:", err);
+          setError("Flowchart syntax error in generated model output.");
+        });
+    } catch (e) {
+      console.error(e);
+      setError("Failed to parse flowchart.");
+    }
+  }, [chartCode]);
+
+  if (error) {
+    return (
+      <div className="mermaid-error" style={{ color: "#ef4444", fontSize: "10px", padding: "8px", border: "1px dashed rgba(239, 68, 68, 0.2)", borderRadius: "4px", marginTop: "10px" }}>
+        <Icon name="alert-triangle" size={12} style={{ marginRight: "6px" }} />
+        {error}
+      </div>
+    );
+  }
+
+  if (!svg) {
+    return <div style={{ fontSize: "10px", color: "var(--text-tertiary)", marginTop: "10px" }}>Compiling diagram SVG...</div>;
+  }
+
+  return (
+    <div 
+      className="mermaid-diagram-container" 
+      dangerouslySetInnerHTML={{ __html: svg }} 
+      style={{ overflowX: "auto", padding: "10px", background: "rgba(255,255,255,0.015)", borderRadius: "6px", border: "1px solid var(--border-subtle)", marginTop: "10px" }}
+    />
+  );
+}
+
 // ── Message Bubble with typewriter for assistant ──
 function MessageBubble({ msg, isLatest }) {
   var routeLabel = null;
@@ -93,6 +153,8 @@ function MessageBubble({ msg, isLatest }) {
       routeLabel = { icon: "file-text", text: "Routed: " + (msg.target_doc || "Single Document"), color: "#3b82f6" };
     } else if (msg.route === "multi") {
       routeLabel = { icon: "database", text: "Routed: Multi-Doc Hybrid Search", color: "#8b5cf6" };
+    } else if (msg.route === "flow") {
+      routeLabel = { icon: "git-commit", text: "Routed: Flowchart Generation Mode", color: "#10b981" };
     }
   }
 
@@ -115,6 +177,9 @@ function MessageBubble({ msg, isLatest }) {
             msg.text
           )}
         </div>
+        {msg.role === "assistant" && (msg.route === "flow" || msg.text?.includes("```mermaid")) && (
+          <MermaidDiagram chartCode={msg.text} />
+        )}
         {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
           <div className="msg-sources">
             <div className="msg-sources-title">
@@ -738,14 +803,15 @@ function App() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <div className="model-selector">
-              <Icon name="cpu" size={12} style={{ marginRight: "6px", color: modelProfile === "deep" ? "#8b5cf6" : "#3b82f6" }} />
+              <Icon name="cpu" size={12} style={{ marginRight: "6px", color: modelProfile === "flow" ? "#10b981" : (modelProfile === "deep" ? "#8b5cf6" : "#3b82f6") }} />
               <select
                 value={modelProfile}
                 onChange={function (e) { handleModelProfileChange(e.target.value); }}
                 className="model-select"
               >
-                <option value="flash">noir flash (qwen)</option>
-                <option value="deep">noir deep (gemma)</option>
+                <option value="flash">noir flash</option>
+                <option value="deep">noir deep</option>
+                <option value="flow">noir flow</option>
               </select>
             </div>
             {logText && (

@@ -101,6 +101,7 @@ class RAGEngine:
         self.light_llm = None
         self.research_llm = None
         self.prompt = None
+        self.flow_prompt = None
         self.is_loaded = False
         self.history = {}  # session_id -> list of Messages
         self.reranker = None
@@ -274,7 +275,26 @@ These requests must be refused.
 * Be direct, helpful, and occasionally witty.
 """),
                 MessagesPlaceholder(variable_name="history"),
-                ("human", "{input}")
+            ])
+
+        if self.flow_prompt is None:
+            self.flow_prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a precise systems analyst and flowchart architect.
+Your job is to read the retrieved document context (if any) and translate the key concepts, workflows, step-by-step procedures, or logical structures into a sequential visual flowchart in Mermaid.js syntax.
+
+## Formatting Rules:
+1. Output ONLY a valid Mermaid.js flowchart code block (enclosed in ```mermaid and ```).
+2. Do NOT add conversational text, descriptions, introductions, or postscripts outside the code block.
+3. Use a clear layout direction, either top-down (`graph TD`) or left-to-right (`graph LR`).
+4. Keep node labels short, descriptive, and clean. Use brackets or quotes properly for text with special characters (e.g., `A["Ingest document chunks"] --> B["Split text"]`).
+5. Ensure there are no syntax errors in the Mermaid diagram.
+6. Provide a logical flow from starting conditions to the final outputs.
+
+Retrieved Document Context:
+<pdf_content>
+{retrieved_chunks}
+</pdf_content>"""),
+                ("human", "Generate a sequential flowchart explaining: {input}")
             ])
 
         if self.is_loaded and not force:
@@ -344,16 +364,22 @@ These requests must be refused.
 
             # 1. Prompt Construction
             t_prompt_start = time.perf_counter()
-            formatted_prompt = self.prompt.format_messages(
-                retrieved_chunks="",
-                history=history_msgs,
-                input=query_text
-            )
+            if model_profile == "flow":
+                formatted_prompt = self.flow_prompt.format_messages(
+                    retrieved_chunks="",
+                    input=query_text
+                )
+            else:
+                formatted_prompt = self.prompt.format_messages(
+                    retrieved_chunks="",
+                    history=history_msgs,
+                    input=query_text
+                )
             prompt_construction_time = time.perf_counter() - t_prompt_start
 
             # 2. LLM Invocation
             t_llm_start = time.perf_counter()
-            active_llm = self.light_llm if model_profile == "flash" else self.research_llm
+            active_llm = self.research_llm if model_profile == "flow" else (self.light_llm if model_profile == "flash" else self.research_llm)
             llm_response = active_llm.invoke(formatted_prompt)
             llm_time = time.perf_counter() - t_llm_start
 
@@ -366,12 +392,14 @@ These requests must be refused.
                 history_msgs = history_msgs[-10:]
             save_history_to_db(session_id, history_msgs)
 
+            actual_route = "flow" if model_profile == "flow" else route
+
             # Format Performance Report
             report_lines = [
                 "--------------------------------------------------",
                 "PERFORMANCE REPORT & BENCHMARKS (ROUTED TO GENERAL CHAT)",
                 "--------------------------------------------------",
-                f"Query Route:               {route.upper()}",
+                f"Query Route:               {actual_route.upper()}",
                 f"Prompt Construction:       {prompt_construction_time:.4f}s",
                 f"LLM Invocation:            {llm_time:.4f}s",
                 f"Total Chain Execution:     {total_time:.4f}s",
@@ -382,11 +410,11 @@ These requests must be refused.
 
             return {
                 "response": llm_response.content,
-                "route": route,
+                "route": actual_route,
                 "target_doc": target_doc,
                 "sources": [],
                 "benchmarks": {
-                    "route": route,
+                    "route": actual_route,
                     "prompt_time": prompt_construction_time,
                     "llm_time": llm_time,
                     "total_time": total_time
@@ -446,16 +474,22 @@ These requests must be refused.
 
             # 5. Prompt Construction
             t_prompt_start = time.perf_counter()
-            formatted_prompt = self.prompt.format_messages(
-                retrieved_chunks=context_str,
-                history=history_msgs,
-                input=query_text
-            )
+            if model_profile == "flow":
+                formatted_prompt = self.flow_prompt.format_messages(
+                    retrieved_chunks=context_str,
+                    input=query_text
+                )
+            else:
+                formatted_prompt = self.prompt.format_messages(
+                    retrieved_chunks=context_str,
+                    history=history_msgs,
+                    input=query_text
+                )
             prompt_construction_time = time.perf_counter() - t_prompt_start
 
             # 6. LLM Invocation
             t_llm_start = time.perf_counter()
-            active_llm = self.light_llm if model_profile == "flash" else self.research_llm
+            active_llm = self.research_llm if model_profile == "flow" else (self.light_llm if model_profile == "flash" else self.research_llm)
             llm_response = active_llm.invoke(formatted_prompt)
             llm_time = time.perf_counter() - t_llm_start
 
@@ -503,13 +537,14 @@ These requests must be refused.
                     "metadata": doc.metadata
                 })
 
+            actual_route = "flow" if model_profile == "flow" else route
             return {
                 "response": llm_response.content,
-                "route": route,
+                "route": actual_route,
                 "target_doc": target_doc,
                 "sources": sources_list,
                 "benchmarks": {
-                    "route": route,
+                    "route": actual_route,
                     "chroma_time": chroma_time,
                     "bm25_time": bm25_time,
                     "ensemble_time": ensemble_time,
